@@ -21,6 +21,7 @@ import { nuxtAutoImports } from './lib/nuxt.mjs';
 import { serverlessRoutes } from './lib/serverless.mjs';
 import { edgeFunctionRoutes } from './lib/supabase-functions.mjs';
 import { grpcRoutes } from './lib/grpc.mjs';
+import { tauriLinks } from './lib/tauri.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const unattended = unattendedMode(args);
@@ -190,7 +191,10 @@ routes.push(...serverless.routes);
 const edge = edgeFunctionRoutes(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
 // gRPC: each rpc at /<package>.<Service>/<Method>, on the Go method that implements it (lib/grpc.mjs)
 const grpc = grpcRoutes(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
+// Tauri: #[tauri::command] fns and the frontend's invoke() calls, linked within each app (lib/tauri.mjs)
+const tauri = tauriLinks(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
 const http = matchCalls(files, routes);
+http.push(...tauri.http);
 // Laravel: Wayfinder's named routes and controller actions, and the Inertia page each endpoint opens
 const wayfinderLinks = matchWayfinder(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
 const inertia = inertiaLinks(files, routes);
@@ -377,6 +381,7 @@ if (edge.functions.length) {
   line();
 }
 
+if (tauri.commands) line(`TAURI  ${tauri.commands} command(s), ${tauri.http.length} invoke() call(s) linked`);
 if (grpc.services) line(`GRPC  ${grpc.services} service(s), ${grpc.implemented} implemented in Go, ${grpc.clients} Go client(s)`);
 if (serverless.configs.length) {
   const signedIn = serverless.routes.filter((r) => r.auth).length;

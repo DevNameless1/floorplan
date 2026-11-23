@@ -2216,7 +2216,8 @@ function whatWasChecked({ graph, scan, perRepo, live, usesSupabase, supabaseTabl
   const out = [];
   const add = (check, label, checked, text, loud) => out.push({ check, label, checked, text, ...(loud ? { loud: true } : {}) });
 
-  const found = graph.routes.filter((r) => !TEST_FILE.test(r.f)).length;
+  // Tauri commands (INVOKE) run inside the desktop app, not on a server anyone can reach
+  const found = graph.routes.filter((r) => !TEST_FILE.test(r.f) && r.m !== 'INVOKE').length;
   const checkedRoutes = [...perRepo.values()].reduce((s, pr) => s + pr.total, 0);
   const servers = [];
   for (const f of scan.files) {

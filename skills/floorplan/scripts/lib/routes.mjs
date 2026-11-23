@@ -414,6 +414,8 @@ export function matchCalls(files, routes) {
         if (r.file === f.path) continue;
         // a Firebase callable (CALL) is only ever reached through httpsCallable, and only reaches callables
         if ((call.method === 'CALL') !== (r.method === 'CALL')) continue;
+        // Tauri commands are reached only through invoke(), linked in lib/tauri.mjs
+        if (r.method === 'INVOKE') continue;
         if (call.method && r.method !== 'ANY' && r.method !== call.method) continue;
         const sc = score(r.caseInsensitive ? csLower : cs, r.segs);
         if (!sc) continue;
