@@ -425,23 +425,27 @@ const DENIED = /(^|\/)(\.git|\.claude)(\/|$)|^floorplan(\/|$)|(^|\/)\.mcp\.json$
  * codebase after resolving links; and not the map, git, or Claude's or MCP settings, in any letter case.
  */
 function editable(p) {
-  if (typeof p !== 'string' || p.length > 400 || !/^[\w@+.\-\/ ]+$/.test(p)) return null;
+  const PLAIN = /^[\w@+.\-\/ ]+$/;
+  if (typeof p !== 'string' || p.length > 400 || !PLAIN.test(p)) return null;
   const rel = path.posix.normalize(p.replace(/^\.\//, ''));
-  if (rel === '.' || rel.endsWith('/') || rel.startsWith('/') || rel.split('/').includes('..') || DENIED.test(rel)) return null;
-  const abs = path.join(root, rel);
+  // Windows drops a trailing dot or space from a name (".git." is .git), so no part may end in one
+  if (rel === '.' || rel.startsWith('/') || rel.split('/').some((c) => !c || c === '..' || /[. ]$/.test(c)) || DENIED.test(rel)) return null;
+  const realRoot = fs.realpathSync.native(root);
+  const abs = path.join(realRoot, rel);
   let real;
   try {
-    const st = fs.lstatSync(abs);
-    if (!st.isFile()) return null;
-    real = fs.realpathSync(abs);
+    if (!fs.lstatSync(abs).isFile()) return null;
+    real = fs.realpathSync.native(abs);
   } catch {
     // a new file: its nearest existing folder decides where it really lands
     let dir = path.dirname(abs);
     while (!fs.existsSync(dir)) dir = path.dirname(dir);
-    real = path.join(fs.realpathSync(dir), path.relative(dir, abs));
+    real = path.join(fs.realpathSync.native(dir), path.relative(dir, abs));
   }
-  const inside = path.relative(fs.realpathSync(root), real).split(path.sep).join('/');
-  return !inside || inside.startsWith('..') || path.isAbsolute(inside) || DENIED.test(inside) ? null : real;
+  // no link anywhere along the way, and the rule built from it is plain text too
+  if (real !== abs) return null;
+  const rule = real.split(path.sep).join('/');
+  return PLAIN.test(rule.replace(/^[a-z]:/i, '')) && !DENIED.test(rel.toLowerCase()) ? real : null;
 }
 const CLOSED = Symbol('closed'); // the browser went away mid-request
 /** Runs the agent once for a request and resolves with its answer, streaming progress through `send`. */
