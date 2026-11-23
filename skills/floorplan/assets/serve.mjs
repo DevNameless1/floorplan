@@ -365,8 +365,15 @@ function claudeRun(body, mode) {
     // "Prompt is too long" before the question is read. The empty config is one argument, so no shell quoting.
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
     '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob'];
-  // an approved code change: edits only, never the map's own folder, and still no shell beyond query.mjs
-  if (mode.write) args.push('Edit', 'Write', '--disallowedTools', 'Edit(floorplan/**)', 'Write(floorplan/**)', '--permission-mode', 'acceptEdits');
+  // an approved code change: Edit and Write only on the files the person approved (anything else is denied in
+  // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
+  if (mode.write) {
+    // Edit rules cover every file-editing tool, Write included
+    for (const f of body.paths || []) args.push(`Edit(./${f})`);
+    args.push('--disallowedTools', ...['floorplan/**', '.claude/**', '.git/**', '**/.git/**', '.mcp.json', '**/.claude/**'].map((g) => `Edit(./${g})`), '--setting-sources', 'user');
+  }
+  // only what's listed above runs: the person's own default mode (auto, acceptEdits, bypass) must not widen it
+  args.push('--permission-mode', 'dontAsk');
   if (body.session) args.push('--resume', String(body.session));
   if (model) args.push('--model', model);
   return {
@@ -408,6 +415,11 @@ function codexRun(body, mode) {
     lastError: () => error,
   };
 }
+// the files each proposal said it would edit, by session: Apply may touch only these
+const proposals = new Map();
+/** A path the agent may edit: inside the codebase, and not the map, git, or Claude's or MCP settings. */
+const editable = (p) => typeof p === 'string' && p.length < 500 && !/^[\\/]|^[a-z]:|(^|[\\/])\.\.([\\/]|$)|[*?{}\[\]\0]/i.test(p)
+  && !/^(floorplan|\.claude|\.git)([\\/]|$)|(^|[\\/])(\.git|\.claude)([\\/]|$)|(^|[\\/])\.mcp\.json$/i.test(p);
 const CLOSED = Symbol('closed'); // the browser went away mid-request
 /** Runs the agent once for a request and resolves with its answer, streaming progress through `send`. */
 function runAgent(res, send, body) {
@@ -457,7 +469,14 @@ function ask(req, res, body) {
   if (body.mode === 'change') return changePlan(res, send, body);
   if (body.mode === 'apply') return applyCode(res, send, body);
   runAgent(res, send, body)
-    .then((a) => send('answer', a), (e) => { if (e !== CLOSED) send('failure', { code: failCode(e.message), message: e.message }); })
+    .then((a) => {
+      if (body.mode === 'propose' && a.session) {
+        a.edits = (Array.isArray(a.edits) ? a.edits : []).filter((e) => editable(e?.path));
+        proposals.set(a.session, a.edits.map((e) => e.path.replace(/\\/g, '/').replace(/^\.\//, '')));
+        if (proposals.size > 20) proposals.delete(proposals.keys().next().value);
+      }
+      send('answer', a);
+    }, (e) => { if (e !== CLOSED) send('failure', { code: failCode(e.message), message: e.message }); })
     .finally(() => res.end());
 }
 
@@ -563,7 +582,10 @@ async function applyCode(res, send, body) {
   changing = true;
   try {
     const request = String(body.question || '').slice(0, 4000);
-    const data = await runAgent(res, send, { question: 'Approved. Make the changes now.', session: String(body.session), mode: 'apply' });
+    const paths = proposals.get(String(body.session));
+    if (!paths?.length) { send('failure', { code: 'cli_error', message: 'This proposal is no longer known to the map server. Ask for the change again.' }); return; }
+    proposals.delete(String(body.session)); // one Apply per proposal
+    const data = await runAgent(res, send, { question: 'Approved. Make the changes now.', session: String(body.session), mode: 'apply', paths });
     const items = (Array.isArray(data.items) ? data.items : []).filter((x) => typeof x?.id === 'string')
       .map((x) => ({ ref: x.id.replace(/^f:/, ''), change: 'changed', note: String(x.note || '') }));
     const plain = String(data.answer || '').split(/\n\s*\n/)[0].replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
