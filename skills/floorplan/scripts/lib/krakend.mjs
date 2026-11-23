@@ -54,16 +54,17 @@ function block(src, open) {
  * ponytail: helpers fed computed arguments or imported from other files are missed; run real jsonnet if that matters.
  */
 export function extractKrakendJsonnet(src) {
+  if (src.length > 1_000_000) return { routes: [], calls: [] };
   let code = src.replace(/\/\*[\s\S]*?\*\//g, (m) => m.replace(/[^\n]/g, ' ')).replace(/(^|[^:'"])\/\/[^\n]*/g, '$1').replace(/^\s*#[^\n]*/gm, '');
   if (!new RegExp(key('endpoint')).test(code)) return { routes: [], calls: [] };
   const helpers = new Map();
   for (const m of code.matchAll(/\blocal\s+(\w+)\s*\(([^)]*)\)\s*=\s*\{/g)) {
-    helpers.set(m[1], { params: m[2].split(',').map((p) => p.trim().split('=')[0].trim()).filter(Boolean), body: block(code, m.index + m[0].length - 1) });
+    helpers.set(m[1], { params: m[2].split(',').map((p) => p.trim().split('=')[0].trim()).filter((p) => /^\w+$/.test(p)), body: block(code, m.index + m[0].length - 1) });
   }
   // inline helpers called with literals only; a few rounds reach helpers used inside helpers
   for (let round = 0; round < 3 && helpers.size; round++) {
     const before = code;
-    code = code.replace(new RegExp(`(?<!local\\s+)\\b(${[...helpers.keys()].join('|')})\\s*\\(\\s*((?:${ARG}\\s*,?\\s*)*)\\)`, 'g'), (whole, name, argText) => {
+    code = code.replace(new RegExp(`(?<!local\\s+)\\b(${[...helpers.keys()].join('|')})\\s*\\(\\s*((?:${ARG}(?:\\s*,\\s*${ARG})*)?)\\s*,?\\s*\\)`, 'g'), (whole, name, argText) => {
       const h = helpers.get(name);
       const args = [...argText.matchAll(new RegExp(ARG, 'g'))].map((a) => a[0]);
       // a parameter as a value (`url_pattern: rpc`, `'/x/' + rpc`), not as a key (`endpoint: endpoint`)
