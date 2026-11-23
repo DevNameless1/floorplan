@@ -14,9 +14,9 @@ const root = path.resolve(args._[0] || '.');
 const dir = mapDir(root);
 const days = Number(args.days) || 90;
 const base = (process.env.JIRA_URL || '').replace(/\/+$/, '');
-const token = process.env.JIRA_TOKEN || '';
+const token = process.env.JIRA_TOKEN || process.env.JIRA_API_TOKEN || '';
 const fail = (msg) => { console.error(`✗ ${msg}`); process.exit(1); };
-if (!/^https?:\/\//.test(base) || !token) fail('Set JIRA_URL (https://jira.example.com) and JIRA_TOKEN (a Jira personal access token).');
+if (!/^https?:\/\//.test(base) || !token) fail('Set JIRA_URL (https://jira.example.com) and JIRA_TOKEN or JIRA_API_TOKEN (a Jira personal access token).');
 
 let scan;
 try { scan = readJsonFile(path.join(dir, '.cache', 'scan.json')); } catch { fail('No floorplan/.cache/scan.json. Run scan.mjs first.'); }

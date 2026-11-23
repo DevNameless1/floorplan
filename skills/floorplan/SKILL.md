@@ -175,7 +175,7 @@ People can also use **Flows → Request a new flow** to have the agent trace som
 
 ### Jira tasks (on request)
 
-When the user asks to see Jira tasks on the map, run `JIRA_URL=<their Jira> JIRA_TOKEN=<token> node ${CLAUDE_SKILL_DIR}/scripts/jira.mjs <root> [--days 90] [--jql "..."]` after scan.mjs, then build.mjs. It finds issue keys in recent commit messages and branch names, links each to the files those commits touched, and writes `floorplan/jira.json`; the map gets a **Jira** button. It works with Jira Server/Data Center personal access tokens. Have the user set `JIRA_URL` and `JIRA_TOKEN` in their shell profile themselves (for example `~/.zshrc`) and restart the session: never ask them to paste the token into the chat, and never write it into a file.
+When the user asks to see Jira tasks on the map, run `JIRA_URL=<their Jira> JIRA_TOKEN=<token> node ${CLAUDE_SKILL_DIR}/scripts/jira.mjs <root> [--days 90] [--jql "..."]` after scan.mjs, then build.mjs. It finds issue keys in recent commit messages and branch names, links each to the files those commits touched, and writes `floorplan/jira.json`; the map gets a **Jira** button. It works with Jira Server/Data Center personal access tokens. Jira tasks belong in `jira.json`, never in `recent-work.json`. If the variables are in the shell profile but not in this session, load them without printing them: `eval "$(grep -E '^export JIRA_' ~/.zshrc)"` in the same command. `JIRA_API_TOKEN` works as well as `JIRA_TOKEN`. Have the user set `JIRA_URL` and `JIRA_TOKEN` in their shell profile themselves (for example `~/.zshrc`) and restart the session: never ask them to paste the token into the chat, and never write it into a file.
 
 ## Notes
 
