@@ -84,7 +84,7 @@ test('FastAPI: router prefix and path parameters', () => {
 
 test('Go: grouped imports and http.HandleFunc endpoints', () => {
   const r = extract(`package main\nimport (\n  "net/http"\n  "example.com/app/store"\n)\nfunc main() { http.HandleFunc("/health", h) }\n`, 'go', 'cmd/main.go');
-  assert.deepEqual(r.imports.map((i) => i.spec), ['net/http', 'example.com/app/store']);
+  assert.deepEqual(r.imports.filter((i) => !i.implicit).map((i) => i.spec), ['net/http', 'example.com/app/store']);
   assert.deepEqual(r.routes.map((x) => `${x.method} ${x.path}`), ['ANY /health']);
 });
 
@@ -118,4 +118,13 @@ test('flattenTemplates replaces every ${…} with a placeholder, nested or not',
 test('doc comments: JSDoc is cleaned, license headers are ignored', () => {
   assert.equal(cleanDoc('/**\n * Lists orders.\n * @param x\n */'), 'Lists orders.');
   assert.equal(cleanDoc('# Copyright 2020 Example Corp'), null);
+});
+
+test('Go: files of one package link to the files declaring the names they use', () => {
+  const a = extract('package svc\n\nfunc Run() { s := NewStore(); _ = s; fmt.Println(limit) }\n', 'go', 'svc/run.go');
+  const b = extract('package svc\n\ntype Store struct{}\n\nfunc NewStore() *Store { return nil }\n\nconst (\n\tlimit = 5\n)\n', 'go', 'svc/store.go');
+  assert.deepEqual(b.decls.sort(), ['NewStore', 'Store', 'limit']);
+  assert.ok(a.imports.some((i) => i.implicit));
+  const words = a.mentions.split(' ');
+  assert.ok(words.includes('NewStore') && words.includes('limit') && !words.includes('Println'));
 });

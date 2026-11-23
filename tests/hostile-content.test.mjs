@@ -541,7 +541,7 @@ describe('long lists of names keep their links, however long', () => {
     const pkgs = Array.from({ length: 1000 }, (_, i) => `example.com/shop/internal/services/package${i}`);
     const go = `package main\n\nimport (\n${pkgs.map((p) => `\t"${p}"`).join('\n')}\n)\n`;
     assert.ok(go.length > 20000);
-    assert.deepEqual(extract(go, 'go', 'cmd/main.go').imports.map((i) => i.spec), pkgs);
+    assert.deepEqual(extract(go, 'go', 'cmd/main.go').imports.filter((i) => !i.implicit).map((i) => i.spec), pkgs);
 
     const pages = names(300, 'Page');
     const table = [

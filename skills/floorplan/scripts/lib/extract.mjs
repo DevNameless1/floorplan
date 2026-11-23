@@ -850,7 +850,38 @@ function extractGo(src) {
     routes.push({ method, path: p, var: null, line: at(m.index) });
   }
   const { calls, hosts } = extractCalls(code, at, { skip: /\.(HandleFunc|Handle|GET|POST)\(/ });
-  return { imports, symbols, routes, mounts: [], calls, hosts };
+  // Files of one package (one folder) use each other's code without importing it
+  imports.push({ spec: '.', names: [], line: 1, implicit: true });
+  const decls = goDecls(code);
+  return { imports, symbols, routes, mounts: [], calls, hosts, decls, mentions: goMentions(code, decls) };
+}
+
+/** Top-level names other files of the package can use: funcs (not methods), types, vars and consts, in blocks too. */
+function goDecls(code) {
+  const out = new Set();
+  for (const m of code.matchAll(/^func\s+(\w+)/gm)) out.add(m[1]);
+  for (const m of code.matchAll(/^(?:type|var|const)\s+(\w+)/gm)) out.add(m[1]);
+  let done = 0; // each block read once, so unclosed ones can't make this quadratic
+  for (const b of code.matchAll(/^(?:type|var|const)\s*\(/gm)) {
+    if (b.index < done) continue;
+    const end = code.indexOf('\n)', b.index);
+    done = end < 0 ? code.length : end;
+    for (const m of code.slice(b.index, done).matchAll(/^\t(\w+)/gm)) out.add(m[1]);
+  }
+  out.delete('_');
+  return [...out];
+}
+
+/** Names the file's code uses that aren't its own or reached through a selector (fmt.Println, x.Field). */
+function goMentions(code, decls) {
+  const own = new Set(decls);
+  const text = code.replace(/`[^`]*`|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, ' ').replace(/^import\b[^\n]*/gm, '');
+  const seen = new Set();
+  for (const m of text.matchAll(/(?<![\w.])[A-Za-z_]\w{0,99}/g)) {
+    if (seen.size >= 20000) break;
+    if (!own.has(m[0])) seen.add(m[0]);
+  }
+  return [...seen].join(' ');
 }
 
 // ---------- Swift ----------

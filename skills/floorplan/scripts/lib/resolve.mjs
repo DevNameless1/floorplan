@@ -310,6 +310,22 @@ export function createResolver(root, files) {
     if (!goDirFiles.has(d)) goDirFiles.set(d, []);
     goDirFiles.get(d).push(f.path);
   }
+  // folder -> top-level name -> the non-test files declaring it
+  const goNames = new Map();
+  for (const f of files) if (f.lang === 'go' && !f.path.endsWith('_test.go')) {
+    const d = P.dirname(f.path);
+    if (!goNames.has(d)) goNames.set(d, new Map());
+    const names = goNames.get(d);
+    for (const n of f.decls || []) { if (!names.has(n)) names.set(n, []); names.get(n).push(f.path); }
+  }
+  /** The files of the same package (folder) declaring the names `file` uses. */
+  const goSamePackage = (file) => {
+    const names = goNames.get(P.dirname(file.path));
+    if (!names || !file.mentions) return { internal: true };
+    const out = new Set();
+    for (const n of file.mentions.split(' ')) for (const h of names.get(n) || []) if (h !== file.path) out.add(h);
+    return out.size ? { files: [...out].sort() } : { internal: true };
+  };
   const resolveGo = (from, spec) => {
     for (const m of goMods) {
       if (spec === m.module || spec.startsWith(m.module + '/')) {
@@ -610,7 +626,7 @@ export function createResolver(root, files) {
     switch (lang) {
       case 'typescript': case 'javascript': case 'vue': case 'svelte': case 'astro': return resolveJs(file.path, imp.spec);
       case 'python': return resolvePy(file.path, imp, file.repo);
-      case 'go': return resolveGo(file.path, imp.spec);
+      case 'go': return imp.implicit ? goSamePackage(file) : resolveGo(file.path, imp.spec);
       case 'rust': return resolveRust(file.path, imp);
       case 'java': case 'kotlin': case 'scala': case 'groovy': return resolveJvm(file, imp);
       case 'swift': return resolveSwift(file, imp);
