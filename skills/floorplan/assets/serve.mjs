@@ -371,7 +371,8 @@ function claudeRun(body, mode) {
   // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
   if (mode.write) {
     // Edit rules cover every file-editing tool, Write included
-    for (const f of body.paths || []) args.push(`Edit(./${f})`);
+    // exact absolute rules (`//` starts an absolute path in a permission rule)
+    for (const f of body.paths || []) args.push(`Edit(/${f.split(path.sep).join('/')})`);
     args.push('--disallowedTools', ...['floorplan/**', '.claude/**', '.git/**', '**/.git/**', '.mcp.json', '**/.claude/**'].map((g) => `Edit(./${g})`), '--setting-sources', 'user');
   }
   if (body.session) args.push('--resume', String(body.session));
@@ -417,9 +418,31 @@ function codexRun(body, mode) {
 }
 // the files each proposal said it would edit, by session: Apply may touch only these
 const proposals = new Map();
-/** A path the agent may edit: inside the codebase, and not the map, git, or Claude's or MCP settings. */
-const editable = (p) => typeof p === 'string' && p.length < 500 && !/^[\\/]|^[a-z]:|(^|[\\/])\.\.([\\/]|$)|[*?{}\[\]\0]/i.test(p)
-  && !/^(floorplan|\.claude|\.git)([\\/]|$)|(^|[\\/])(\.git|\.claude)([\\/]|$)|(^|[\\/])\.mcp\.json$/i.test(p);
+const DENIED = /(^|\/)(\.git|\.claude)(\/|$)|^floorplan(\/|$)|(^|\/)\.mcp\.json$/i;
+/**
+ * The absolute path of a file the agent may edit, or null. Plain characters only (a permission rule can't be
+ * bent by brackets, commas or parentheses); a regular file or a new one, never a folder or a symlink; inside the
+ * codebase after resolving links; and not the map, git, or Claude's or MCP settings, in any letter case.
+ */
+function editable(p) {
+  if (typeof p !== 'string' || p.length > 400 || !/^[\w@+.\-\/ ]+$/.test(p)) return null;
+  const rel = path.posix.normalize(p.replace(/^\.\//, ''));
+  if (rel === '.' || rel.endsWith('/') || rel.startsWith('/') || rel.split('/').includes('..') || DENIED.test(rel)) return null;
+  const abs = path.join(root, rel);
+  let real;
+  try {
+    const st = fs.lstatSync(abs);
+    if (!st.isFile()) return null;
+    real = fs.realpathSync(abs);
+  } catch {
+    // a new file: its nearest existing folder decides where it really lands
+    let dir = path.dirname(abs);
+    while (!fs.existsSync(dir)) dir = path.dirname(dir);
+    real = path.join(fs.realpathSync(dir), path.relative(dir, abs));
+  }
+  const inside = path.relative(fs.realpathSync(root), real).split(path.sep).join('/');
+  return !inside || inside.startsWith('..') || path.isAbsolute(inside) || DENIED.test(inside) ? null : real;
+}
 const CLOSED = Symbol('closed'); // the browser went away mid-request
 /** Runs the agent once for a request and resolves with its answer, streaming progress through `send`. */
 function runAgent(res, send, body) {
@@ -471,8 +494,9 @@ function ask(req, res, body) {
   runAgent(res, send, body)
     .then((a) => {
       if (body.mode === 'propose' && a.session) {
-        a.edits = (Array.isArray(a.edits) ? a.edits : []).filter((e) => editable(e?.path));
-        proposals.set(a.session, a.edits.map((e) => e.path.replace(/\\/g, '/').replace(/^\.\//, '')));
+        a.edits = (Array.isArray(a.edits) ? a.edits : []).filter((e) => (e.abs = editable(e?.path)));
+        proposals.set(a.session, a.edits.map((e) => e.abs));
+        for (const e of a.edits) delete e.abs;
         if (proposals.size > 20) proposals.delete(proposals.keys().next().value);
       }
       send('answer', a);
