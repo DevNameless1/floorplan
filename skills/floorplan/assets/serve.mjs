@@ -190,7 +190,7 @@ if (cli) { try { version = execFileSync(cli.cmd, [...cli.args, '--version'], { e
 
 // The page, the graph, and the instructions and answer schema (from query.mjs's inlined graph-query
 // code). Loaded at start and again whenever the map is rebuilt.
-const inject = `<script>window.FLOORPLAN_SERVER=${scriptJson({ token, cli: !!cli, engine, want, version, model: model || null, change: canChange, editor })};</script>`;
+const inject = `<script>window.FLOORPLAN_SERVER=${scriptJson({ token, cli: !!cli, engine, want, version, model: model || null, change: canChange, code: engine === 'claude', editor })};</script>`;
 let page, G, core, MODES;
 function load() {
   const html = fs.readFileSync(path.join(here, 'index.html'), 'utf8');
@@ -206,6 +206,11 @@ function load() {
   MODES = {
     ask: { instructions: core.floorplanAskInstructions(G, 'cli'), schema: core.FLOORPLAN_ANSWER_SCHEMA, file: path.join(here, '.cache', 'answer-schema.json') },
     flow: { instructions: core.floorplanFlowInstructions(G, 'cli'), schema: core.FLOORPLAN_FLOW_SCHEMA, file: path.join(here, '.cache', 'flow-schema.json') },
+    // a code map: a change to the code is proposed first (read-only), then made once the person approves it
+    ...(!G.meta?.blueprint && engine === 'claude' ? {
+      propose: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${PROPOSE_TEXT}`, schema: PROPOSE_SCHEMA },
+      apply: { instructions: APPLY_TEXT, schema: core.FLOORPLAN_ANSWER_SCHEMA, write: true },
+    } : {}),
     ...(G.meta?.blueprint && canChange ? { change: { instructions: core.floorplanChangeInstructions(G), schema: core.FLOORPLAN_CHANGE_SCHEMA, file: path.join(here, '.cache', 'change-schema.json') } } : {}),
   };
   if (ENGINES[engine]?.schemaFile) {
@@ -213,6 +218,24 @@ function load() {
     for (const m of Object.values(MODES)) fs.writeFileSync(m.file, JSON.stringify(strict(m.schema)));
   }
 }
+const PROPOSE_TEXT = `This request asks for a change to the code. Change nothing now: you can only read. Work out exactly what you would do, then reply with a proposal the person approves before anything is edited.
+- title: the change, 2-6 words.
+- answer: Markdown, plain words, at most ~200 words: what you will do and how, and anything risky or uncertain.
+- edits: every file you will create, change or delete (its path from the codebase root), each with what changes in it.
+- items: the other map items the change affects (callers, screens, endpoints, gateways and other services that use what you change), found with query.mjs show and path, each with how it is affected. Empty if nothing else is affected.
+If the request is only a question, answer it and leave edits empty.`;
+const PROPOSE_SCHEMA = {
+  type: 'object',
+  properties: {
+    title: { type: 'string' },
+    answer: { type: 'string' },
+    edits: { type: 'array', items: { type: 'object', properties: { path: { type: 'string' }, change: { type: 'string', enum: ['new', 'changed', 'deleted'] }, note: { type: 'string', description: 'What changes in this file, at most 20 words.' } }, required: ['path', 'change', 'note'] } },
+    items: { type: 'array', items: { type: 'object', properties: { id: { type: 'string' }, note: { type: 'string', description: 'How this item is affected, at most 15 words.' } }, required: ['id', 'note'] } },
+  },
+  required: ['title', 'answer', 'edits', 'items'],
+};
+const APPLY_TEXT = `The person approved your proposal. Make exactly the edits it lists and nothing else. If doing it needs a file the proposal didn't list, don't edit that file: finish what you can and say what is left in your answer. Don't run builds or tests, and don't touch the floorplan/ folder. Then reply with title (what was done, 2-6 words), answer (Markdown, at most ~150 words: what you changed and anything left to do) and items (map ids of the files you edited, f:<path>, each with what changed).`;
+
 /** OpenAI structured outputs want every property required and nothing extra; optional lists just come back empty. */
 function strict(s) {
   if (s?.type === 'object' && s.properties) return { ...s, properties: Object.fromEntries(Object.entries(s.properties).map(([k, v]) => [k, strict(v)])), required: Object.keys(s.properties), additionalProperties: false };
@@ -316,6 +339,8 @@ function describeTool(name, input = {}) {
   // a long result the CLI saved to read back in parts lives outside the project
   if (name === 'Read') return /[\\/]tool-results[\\/]/.test(input.file_path || '') ? 'Reading the rest of a long file' : `Reading ${rel(input.file_path)}`;
   if (name === 'Grep') return `Searching code for "${input.pattern}"`;
+  if (name === 'Edit' || name === 'Write') return `Editing ${rel(input.file_path)}`;
+  if (name === 'StructuredOutput') return 'Writing up the result';
   if (name === 'Glob') return `Listing ${input.pattern}`;
   return name;
 }
@@ -339,7 +364,9 @@ function claudeRun(body, mode) {
     // plugins) would otherwise load every tool's description into each question, enough to make it
     // "Prompt is too long" before the question is read. The empty config is one argument, so no shell quoting.
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-    '--tools', 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob'];
+    '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob'];
+  // an approved code change: edits only, never the map's own folder, and still no shell beyond query.mjs
+  if (mode.write) args.push('Edit', 'Write', '--disallowedTools', 'Edit(floorplan/**)', 'Write(floorplan/**)', '--permission-mode', 'acceptEdits');
   if (body.session) args.push('--resume', String(body.session));
   if (model) args.push('--model', model);
   return {
@@ -428,6 +455,7 @@ function ask(req, res, body) {
   const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   if (!cli) { send('failure', { code: 'cli_missing', message: `${ENGINES[want].name} not found.` }); return res.end(); }
   if (body.mode === 'change') return changePlan(res, send, body);
+  if (body.mode === 'apply') return applyCode(res, send, body);
   runAgent(res, send, body)
     .then((a) => send('answer', a), (e) => { if (e !== CLOSED) send('failure', { code: failCode(e.message), message: e.message }); })
     .finally(() => res.end());
@@ -525,6 +553,30 @@ async function changePlan(res, send, body) {
     if (e !== CLOSED) send('failure', { code: failCode(String(e.message || e)), message: String(e.message || e) });
   } finally { changing = false; res.end(); }
 }
+// ---------- changing the code from the map ----------
+// The proposal came from a read-only run; this resumes that session with edit tools, then re-scans and
+// redraws the map with the edited files highlighted as recent work. Undo is the person's own git.
+async function applyCode(res, send, body) {
+  if (!MODES.apply) { send('failure', { code: 'cli_error', message: 'Changing code from the map needs the Claude Code CLI.' }); return res.end(); }
+  if (!body.session) { send('failure', { code: 'cli_error', message: 'Nothing to apply: ask for the change again.' }); return res.end(); }
+  if (changing) { send('failure', { code: 'busy', message: 'Another change is still being made. Try again when it’s done.' }); return res.end(); }
+  changing = true;
+  try {
+    const request = String(body.question || '').slice(0, 4000);
+    const data = await runAgent(res, send, { question: 'Approved. Make the changes now.', session: String(body.session), mode: 'apply' });
+    const items = (Array.isArray(data.items) ? data.items : []).filter((x) => typeof x?.id === 'string')
+      .map((x) => ({ ref: x.id.replace(/^f:/, ''), change: 'changed', note: String(x.note || '') }));
+    const plain = String(data.answer || '').split(/\n\s*\n/)[0].replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
+    fs.writeFileSync(path.join(here, 'recent-work.json'), JSON.stringify({ updatedAt: new Date().toISOString(), tasks: [{ title: String(data.title || 'Changed the code').slice(0, 80), request, summary: plain, items }] }, null, 2) + '\n');
+    send('progress', { text: 'Redrawing the map' });
+    try { skillScript('refresh.mjs'); } catch (e) { console.error(`✗ couldn't redraw the map after a code change: ${String(e.message || e).slice(0, 500)}`); }
+    console.log(`code changed: ${data.title || request.slice(0, 60)}`);
+    send('answer', { title: String(data.title || ''), summary: String(data.answer || ''), changes: items.length, followups: [] });
+  } catch (e) {
+    if (e !== CLOSED) send('failure', { code: failCode(String(e.message || e)), message: String(e.message || e) });
+  } finally { changing = false; res.end(); }
+}
+
 /** Puts back the files a change replaced (the newest first), and redraws. */
 function undoChange() {
   const all = fs.existsSync(historyDir) ? fs.readdirSync(historyDir).sort() : [];

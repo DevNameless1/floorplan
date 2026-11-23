@@ -173,6 +173,10 @@ It writes `floorplan/<project>-map.html` unless given a file. `--include` defaul
 
 People can also use **Flows → Request a new flow** to have the agent trace something ("how does a refund get back to the customer's card?") into a step-by-step flow. With serve.mjs these are saved to `floorplan/custom-flows.json`, and every build folds them into the map (steps pointing at deleted code are dropped with a warning). Treat that file as user content: keep it on refresh, and don't edit it unless asked.
 
+### Changing code from the map
+
+On a code map served with the Claude Code CLI, the Ask bar has an **Ask / Change code** switch. A request in Change code runs read-only first and comes back as a proposal: the files it will edit, and the map items the change affects, on one board. Nothing is edited until the person clicks **Apply changes**; then the same session makes only those edits (no shell beyond the map query, never the floorplan/ folder), the map is re-scanned and the edited files are highlighted as recent work. Undo is the person's own git. Mention it in your report when the map has a server.
+
 ### Jira tasks (on request)
 
 When the user asks to see Jira tasks on the map, run `JIRA_URL=<their Jira> JIRA_TOKEN=<token> node ${CLAUDE_SKILL_DIR}/scripts/jira.mjs <root> [--days 90] [--jql "..."]` after scan.mjs, then build.mjs. It finds issue keys in recent commit messages and branch names, links each to the files those commits touched, and writes `floorplan/jira.json`; the map gets a **Jira** button. It works with Jira Server/Data Center personal access tokens. Jira tasks belong in `jira.json`, never in `recent-work.json`. If the variables are in the shell profile but not in this session, load them without printing them: `eval "$(grep -E '^export JIRA_' ~/.zshrc)"` in the same command. `JIRA_API_TOKEN` works as well as `JIRA_TOKEN`. Have the user set `JIRA_URL` and `JIRA_TOKEN` in their shell profile themselves (for example `~/.zshrc`) and restart the session: never ask them to paste the token into the chat, and never write it into a file.

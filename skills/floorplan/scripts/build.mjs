@@ -679,7 +679,8 @@ for (const name of ['serve.mjs', 'page-safety.mjs']) {
   fs.writeFileSync(path.join(outDir, name), bytes);
 }
 // a blueprint can be changed from the map: serve.mjs redraws it with this skill's plan.mjs and build.mjs
-if (scan.blueprint) { fs.mkdirSync(path.join(outDir, '.cache'), { recursive: true }); fs.writeFileSync(path.join(outDir, '.cache', 'skill.json'), JSON.stringify({ dir: SKILL_DIR })); }
+// where the skill's scripts are, for the map server's Change (a blueprint's plan, or code)
+fs.mkdirSync(path.join(outDir, '.cache'), { recursive: true }); fs.writeFileSync(path.join(outDir, '.cache', 'skill.json'), JSON.stringify({ dir: SKILL_DIR }));
 // the logo and tab icon are inlined so the map stays one self-contained file
 function dataUri(name) { return 'data:image/png;base64,' + fs.readFileSync(path.join(SKILL_DIR, 'assets', name)).toString('base64'); }
 function escapeHtml(s) { return s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]); }
@@ -732,7 +733,7 @@ else {
       path.join(outDir, '.gitignore'), path.join(outDir, 'graph.json'), path.join(outDir, 'index.html'),
       ...(args.artifact ? [path.join(outDir, 'artifact.html')] : []),
       path.join(outDir, 'query.mjs'), path.join(outDir, 'serve.mjs'), path.join(outDir, 'page-safety.mjs'),
-      ...(scan.blueprint ? [path.join(outDir, '.cache', 'skill.json')] : []),
+      path.join(outDir, '.cache', 'skill.json'),
     ].map(relPath),
     report: report.join('\n'),
   }));
