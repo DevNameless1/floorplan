@@ -364,6 +364,8 @@ function claudeRun(body, mode) {
     // plugins) would otherwise load every tool's description into each question, enough to make it
     // "Prompt is too long" before the question is read. The empty config is one argument, so no shell quoting.
     '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+    // only what's allowed here runs: the person's own default mode (auto, acceptEdits, bypass) must not widen it
+    '--permission-mode', 'dontAsk',
     '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob'];
   // an approved code change: Edit and Write only on the files the person approved (anything else is denied in
   // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
@@ -372,8 +374,6 @@ function claudeRun(body, mode) {
     for (const f of body.paths || []) args.push(`Edit(./${f})`);
     args.push('--disallowedTools', ...['floorplan/**', '.claude/**', '.git/**', '**/.git/**', '.mcp.json', '**/.claude/**'].map((g) => `Edit(./${g})`), '--setting-sources', 'user');
   }
-  // only what's listed above runs: the person's own default mode (auto, acceptEdits, bypass) must not widen it
-  args.push('--permission-mode', 'dontAsk');
   if (body.session) args.push('--resume', String(body.session));
   if (model) args.push('--model', model);
   return {
