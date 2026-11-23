@@ -174,6 +174,8 @@ export function classify(relPath, bytes, { themes } = {}) {
   const theme = themes && [...themes].find((r) => relPath.startsWith(r));
   if (theme !== undefined && (ext === '.liquid' || (ext === '.json' && THEME_JSON.test(relPath.slice(theme.length))))) return { category: 'code', lang: 'liquid' };
   if (GENERATED.test(relPath)) return { category: 'generated', lang: null };
+  if (/^krakend[\w.-]*\.json$/.test(base)) return { category: 'code', lang: 'krakend' };
+  if (ext === '.jsonnet') return { category: 'code', lang: 'jsonnet' };
   if (LOCK_NAMES.test(base)) return { category: 'lock', lang: null };
   if (ext === '.log' || base.endsWith('.log')) return { category: 'log', lang: null };
   if (ASSET_EXT.has(ext)) return { category: 'asset', lang: null };

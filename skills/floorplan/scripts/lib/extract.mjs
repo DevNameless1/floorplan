@@ -2,6 +2,7 @@
 // Deliberately approximate: good enough to draw the map, cheap enough to run on any repo.
 import { forwardIndexOf, importStatements, callArgs } from './common.mjs';
 import { dataRoutes } from './route-tables.mjs';
+import { extractKrakend, extractKrakendJsonnet } from './krakend.mjs';
 
 import path from 'node:path';
 
@@ -2236,6 +2237,8 @@ function liquidDoc(src) {
 function extractByLang(src, lang, filePath) {
   switch (lang) {
     case 'liquid': return extractLiquid(src, filePath);
+    case 'krakend': return { imports: [], symbols: [], mounts: [], hosts: [], ...extractKrakend(src) };
+    case 'jsonnet': return { imports: [], symbols: [], mounts: [], hosts: [], ...extractKrakendJsonnet(src) };
     case 'typescript': case 'javascript': case 'vue': case 'svelte': case 'astro': return extractJs(src, filePath);
     case 'python': return extractPy(src);
     case 'php': return /\.blade\.php$/i.test(filePath || '') ? extractSimple(src, lang) : extractPhp(src, filePath);

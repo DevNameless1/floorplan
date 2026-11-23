@@ -385,6 +385,21 @@ if (fs.existsSync(recentFile)) {
     outRecent = { updatedAt: isStr(rw.updatedAt) ? rw.updatedAt : fs.statSync(recentFile).mtime.toISOString(), tasks, items };
   }
 }
+// Jira tasks (floorplan/jira.json, from jira.mjs): each issue and the cards its commits touched
+let outJira = null;
+const jiraFile = path.join(outDir, 'jira.json');
+if (fs.existsSync(jiraFile)) {
+  let j = null;
+  try { j = readJsonFile(jiraFile); } catch (e) { warn(`jira.json is not valid JSON: ${e.message}`); }
+  if (j && Array.isArray(j.issues)) outJira = {
+    updatedAt: isStr(j.updatedAt) ? j.updatedAt : '',
+    issues: j.issues.filter((i) => isStr(i?.key)).map((i) => ({
+      key: i.key, summary: String(i.summary || ''), status: String(i.status || ''), cat: String(i.cat || ''), type: String(i.type || ''),
+      assignee: String(i.assignee || ''), updated: String(i.updated || ''), url: /^https?:\/\//.test(i.url) ? i.url : '',
+      ids: (isStrArr(i.files) ? i.files : []).filter((p) => includedSet.has(p)).map((p) => 'f:' + p),
+    })),
+  };
+}
 const notes = new Map();
 annotations.forEach((a, i) => {
   if (!isStr(a?.path) || !isStr(a?.note)) return err(`annotations[${i}] needs path and note`);
@@ -599,6 +614,7 @@ const graph = {
   flows: outFlows,
   tour: outTour,
   ...(outRecent?.items.length ? { recent: outRecent } : {}),
+  ...(outJira?.issues.length ? { jira: outJira } : {}),
 };
 // extension hooks, computed from the finished graph plus the raw scan
 // a blueprint has no code to check, so its Health is a design review of the plan (computed after screens)
@@ -685,6 +701,7 @@ if (graph.screens?.length) report.push(`SCREENS  ${graph.screens.length} detecte
 report.push(graph.recent
   ? `RECENT WORK  ${graph.recent.items.length} card(s) highlighted across ${graph.recent.tasks.length} task(s)`
   : `RECENT WORK  none highlighted${fs.existsSync(recentFile) ? '' : ' (no recent-work.json)'}`);
+if (graph.jira) report.push(`JIRA  ${graph.jira.issues.length} issue(s), ${graph.jira.issues.filter((i) => i.ids.length).length} linked to cards`);
 // point future Claude Code sessions in this project at the map. Codex has no personal, uncommitted
 // equivalent (AGENTS.md is shared with the team), so a map built by Codex leaves the project's notes alone,
 // and so does a map made without an agent session. Unattended mode never writes outside the map folder.

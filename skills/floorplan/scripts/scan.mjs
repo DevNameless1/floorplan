@@ -20,6 +20,7 @@ import { resolveRoutes, matchCalls, matchWayfinder, inertiaLinks } from './lib/r
 import { nuxtAutoImports } from './lib/nuxt.mjs';
 import { serverlessRoutes } from './lib/serverless.mjs';
 import { edgeFunctionRoutes } from './lib/supabase-functions.mjs';
+import { grpcRoutes } from './lib/grpc.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const unattended = unattendedMode(args);
@@ -187,6 +188,8 @@ const serverless = serverlessRoutes(files, (p) => { try { return fs.readFileSync
 routes.push(...serverless.routes);
 // Supabase Edge Functions: each one's address under /functions/v1 (lib/supabase-functions.mjs)
 const edge = edgeFunctionRoutes(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
+// gRPC: each rpc at /<package>.<Service>/<Method>, on the Go method that implements it (lib/grpc.mjs)
+const grpc = grpcRoutes(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
 const http = matchCalls(files, routes);
 // Laravel: Wayfinder's named routes and controller actions, and the Inertia page each endpoint opens
 const wayfinderLinks = matchWayfinder(files, routes, (p) => { try { return fs.readFileSync(path.join(root, p), 'utf8'); } catch { return ''; } });
@@ -374,6 +377,7 @@ if (edge.functions.length) {
   line();
 }
 
+if (grpc.services) line(`GRPC  ${grpc.services} service(s), ${grpc.implemented} implemented in Go, ${grpc.clients} Go client(s)`);
 if (serverless.configs.length) {
   const signedIn = serverless.routes.filter((r) => r.auth).length;
   line(`SERVERLESS  ${serverless.routes.length} endpoints from ${serverless.configs.length} config file(s) (${serverless.configs.slice(0, 4).join(', ')}${serverless.configs.length > 4 ? ' …' : ''}), ${signedIn} behind an authorizer or API key, ${serverless.triggers.length} background`);
