@@ -641,8 +641,14 @@ async function applyCode(res, send, body) {
 
 // The agent itself has no shell beyond the map query: Bash rules match by prefix, so `go test` would also let
 // it through with -exec or -toolexec. The server runs the checks and hands the agent the failures instead.
+// Tests run code the agent wrote: they get the Go settings and nothing else from this shell (no tokens or keys),
+// and no automatic toolchain download.
+const goEnv = () => ({
+  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(GO(?!FLAGS$)\w*|PATH|HOME|TMPDIR|TEMP|TMP|USER|SystemRoot|LOCALAPPDATA)$/.test(k))),
+  GOFLAGS: '', GOTOOLCHAIN: 'local',
+});
 const goRun = (args, cwd) => new Promise((resolve) => {
-  const child = spawn('go', args, { cwd, timeout: 300000, windowsHide: true, env: { ...process.env, GOFLAGS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn('go', args, { cwd, timeout: 300000, windowsHide: true, env: goEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
   let text = '';
   const add = (d) => { text = (text + d).slice(-20000); };
   child.stdout.on('data', add); child.stderr.on('data', add);
