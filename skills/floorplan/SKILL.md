@@ -175,7 +175,7 @@ People can also use **Flows → Request a new flow** to have the agent trace som
 
 ### Changing code from the map
 
-On a code map served with the Claude Code CLI, the Ask bar has an **Ask / Change code** switch. A request in Change code runs read-only first and comes back as a proposal: the files it will edit, and the map items the change affects, on one board. Nothing is edited until the person clicks **Apply changes**; then the same session makes only those edits (no shell beyond the map query, never the floorplan/ folder), the map is re-scanned and the edited files are highlighted as recent work. Undo is the person's own git. Mention it in your report when the map has a server.
+On a code map served with the Claude Code CLI, the Ask bar has an **Ask / Change code** switch. A request in Change code runs read-only first and comes back as a proposal: the files it will edit, and the map items the change affects, on one board. Nothing is edited until the person clicks **Apply changes**; then the same session makes only those edits (no shell beyond the map query, never the floorplan/ folder), when edited `.go` files are in a Go module, the server runs `go build ./...` and `go test` on the edited packages and hands failures back to the agent to fix (up to two rounds, still only in the approved files), and the result says whether they pass; then the map is re-scanned and the edited files are highlighted as recent work. Undo is the person's own git. Mention it in your report when the map has a server.
 
 ### Jira tasks (on request)
 

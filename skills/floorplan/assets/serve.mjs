@@ -14,6 +14,7 @@
 import http from 'node:http';
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { spawn, execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -234,7 +235,7 @@ const PROPOSE_SCHEMA = {
   },
   required: ['title', 'answer', 'edits', 'items'],
 };
-const APPLY_TEXT = `The person approved your proposal. Make exactly the edits it lists and nothing else. If doing it needs a file the proposal didn't list, don't edit that file: finish what you can and say what is left in your answer. Don't run builds or tests, and don't touch the floorplan/ folder. Then reply with title (what was done, 2-6 words), answer (Markdown, at most ~150 words: what you changed and anything left to do) and items (map ids of the files you edited, f:<path>, each with what changed).`;
+const APPLY_TEXT = `The person approved your proposal. Make exactly the edits it lists and nothing else. If doing it needs a file the proposal didn't list, don't edit that file: finish what you can and say what is left in your answer. Don't run builds or tests yourself: for Go code the map server runs go build and go test after you and sends you any failure to fix. Don't touch the floorplan/ folder. Then reply with title (what was done, 2-6 words), answer (Markdown, at most ~150 words: what you changed and anything left to do) and items (map ids of the files you edited, f:<path>, each with what changed).`;
 
 /** OpenAI structured outputs want every property required and nothing extra; optional lists just come back empty. */
 function strict(s) {
@@ -613,7 +614,18 @@ async function applyCode(res, send, body) {
     const paths = proposals.get(String(body.session));
     if (!paths?.length) { send('failure', { code: 'cli_error', message: 'This proposal is no longer known to the map server. Ask for the change again.' }); return; }
     proposals.delete(String(body.session)); // one Apply per proposal
-    const data = await runAgent(res, send, { question: 'Approved. Make the changes now.', session: String(body.session), mode: 'apply', paths });
+    let data = await runAgent(res, send, { question: 'Approved. Make the changes now.', session: String(body.session), mode: 'apply', paths });
+    let check = await goCheck(paths, send);
+    // the same failure twice means the agent can't fix it within the approved files (timings aside)
+    const same = (c) => c.output.replace(/\d+(\.\d+)?m?s\b/g, '');
+    for (let round = 0, last = ''; check?.failed && same(check) !== last && round < 2; round++) {
+      last = same(check);
+      const fix = await runAgent(res, send, { question: `The map server ran go build and go test after your edits and they failed:\n\n${check.output}\n\nFix it, still only in the approved files. If a failure isn't caused by your change, leave it and say so.`, session: String(data.session || body.session), mode: 'apply', paths });
+      const ids = new Set((fix.items || []).map((x) => x?.id));
+      data = { ...fix, items: [...(fix.items || []), ...(data.items || []).filter((x) => !ids.has(x?.id))] };
+      check = await goCheck(paths, send);
+    }
+    if (check) data.answer = `${data.answer || ''}\n\n${check.failed ? `**go build / go test still fail:**\n\n\`\`\`\n${check.output.slice(-1500)}\n\`\`\`` : `✓ go build and go test pass (${check.where}).`}`;
     const items = (Array.isArray(data.items) ? data.items : []).filter((x) => typeof x?.id === 'string')
       .map((x) => ({ ref: x.id.replace(/^f:/, ''), change: 'changed', note: String(x.note || '') }));
     const plain = String(data.answer || '').split(/\n\s*\n/)[0].replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
@@ -625,6 +637,48 @@ async function applyCode(res, send, body) {
   } catch (e) {
     if (e !== CLOSED) send('failure', { code: failCode(String(e.message || e)), message: String(e.message || e) });
   } finally { changing = false; res.end(); }
+}
+
+// The agent itself has no shell beyond the map query: Bash rules match by prefix, so `go test` would also let
+// it through with -exec or -toolexec. The server runs the checks and hands the agent the failures instead.
+const goRun = (args, cwd) => new Promise((resolve) => {
+  const child = spawn('go', args, { cwd, timeout: 300000, windowsHide: true, env: { ...process.env, GOFLAGS: '' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  let text = '';
+  const add = (d) => { text = (text + d).slice(-20000); };
+  child.stdout.on('data', add); child.stderr.on('data', add);
+  child.on('error', (e) => resolve({ ok: false, missing: e.code === 'ENOENT', text: e.message }));
+  child.on('close', (code) => resolve({ ok: code === 0, text: text.trim() }));
+});
+/** go build ./... and go test on the edited packages, per Go module the approved .go files are in; null when there are none. */
+async function goCheck(paths, send) {
+  const top = fs.realpathSync.native(root);
+  const mods = new Map(); // module dir -> package dirs
+  for (const f of paths) {
+    if (!f.endsWith('.go') || !fs.existsSync(f)) continue;
+    let d = path.dirname(f);
+    while (!fs.existsSync(path.join(d, 'go.mod')) && d.startsWith(top + path.sep)) d = path.dirname(d);
+    if (!fs.existsSync(path.join(d, 'go.mod'))) continue;
+    if (!mods.has(d)) mods.set(d, new Set());
+    mods.get(d).add('./' + path.relative(d, path.dirname(f)).split(path.sep).join('/'));
+  }
+  if (!mods.size) return null;
+  const where = [], fails = [];
+  for (const [dir, pkgs] of mods) {
+    const name = path.relative(top, dir).split(path.sep).join('/') || '.';
+    where.push(name);
+    send('progress', { text: `Building ${name}` });
+    // main packages' binaries go to a throwaway folder, not into the project
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'floorplan-go-'));
+    const b = await goRun(['build', '-o', bin, './...'], dir);
+    fs.rmSync(bin, { recursive: true, force: true });
+    if (b.missing) return { failed: false, where: 'skipped: go is not installed' };
+    if (!b.ok) { fails.push(`$ go build ./...   (in ${name})\n${b.text.slice(-3000)}`); continue; }
+    send('progress', { text: `Testing ${name}` });
+    // ponytail: only the edited packages' tests; callers in other packages are covered by the build alone
+    const t = await goRun(['test', '-count=1', ...[...pkgs].map((p) => p === './' ? '.' : p)], dir);
+    if (!t.ok) fails.push(`$ go test   (in ${name})\n${t.text.slice(-3000)}`);
+  }
+  return { failed: fails.length > 0, output: fails.join('\n\n'), where: where.join(', ') };
 }
 
 /** Puts back the files a change replaced (the newest first), and redraws. */
