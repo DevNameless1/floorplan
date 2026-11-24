@@ -342,6 +342,8 @@ function describeTool(name, input = {}) {
   if (name === 'Grep') return `Searching code for "${input.pattern}"`;
   if (name === 'Edit' || name === 'Write') return `Editing ${rel(input.file_path)}`;
   if (name === 'StructuredOutput') return 'Writing up the result';
+  if (name.startsWith('mcp__context7__')) return `Looking up docs${input.libraryName || input.libraryId ? ` for ${input.libraryName || input.libraryId}` : ''}`;
+  if (name.startsWith('mcp__atlassian__')) return /confluence/.test(name) ? 'Looking in Confluence' : `Looking in Jira${input.issue_key ? ` at ${input.issue_key}` : ''}`;
   if (name === 'Glob') return `Listing ${input.pattern}`;
   return name;
 }
@@ -354,20 +356,37 @@ function parseAnswer(ev) {
 }
 const failCode = (msg) => /not logged in|logged out|\/login|log ?in again|sign in|authenticat|unauthori[sz]ed|\b401\b/i.test(msg) ? 'not_logged_in'
   : /usage limit|rate limit|too many requests|\b429\b/i.test(msg) ? 'rate_limited' : 'cli_error';
+// MCP servers from the person's own Claude Code config the agent may use, named in architecture.json "mcp".
+// Their config holds the person's tokens, so it goes to a private temp file (removed on exit), never the command line.
+const mcpNames = (() => { try { const m = JSON.parse(fs.readFileSync(path.join(here, 'architecture.json'), 'utf8')).mcp; return Array.isArray(m) ? m.filter((n) => typeof n === 'string' && /^[\w-]+$/.test(n)) : []; } catch { return []; } })();
+const mcpFile = (() => {
+  if (!mcpNames.length) return null;
+  let cfg; try { cfg = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json'), 'utf8')); } catch { return null; }
+  const all = { ...(cfg.mcpServers || {}), ...(cfg.projects?.[root]?.mcpServers || {}) };
+  const servers = Object.fromEntries(mcpNames.filter((n) => all[n]).map((n) => [n, all[n]]));
+  const missing = mcpNames.filter((n) => !all[n]);
+  if (missing.length) console.error(`✗ MCP server(s) not in your Claude Code config: ${missing.join(', ')}`);
+  if (!Object.keys(servers).length) return null;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'floorplan-mcp-'));
+  const file = path.join(dir, 'mcp.json');
+  fs.writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
+  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
+  return { file, names: Object.keys(servers) };
+})();
+const MCP_TEXT = mcpFile ? `\n\nYou also have these MCP servers: ${mcpFile.names.join(', ')}. Use context7 (if listed) for current documentation of any library, framework or tool the code uses, and atlassian (if listed) to look up Jira issues and Confluence pages the question or the code refers to (issue keys like URB-123). Only read with them: never create, edit or comment on anything.` : '';
 // Claude Code: `claude -p` with read-only tools, answering in the schema; follow-ups resume its session
 function claudeRun(body, mode) {
   const args = [...cli.args, '-p', '--output-format', 'stream-json', '--verbose',
-    '--json-schema', JSON.stringify(mode.schema), '--append-system-prompt', mode.instructions,
+    '--json-schema', JSON.stringify(mode.schema), '--append-system-prompt', mode.instructions + MCP_TEXT,
     // Keep the agent out of the map's own generated files. floorplan/index.html inlines the layout engine and
     // fonts (about 2 MB on one line), and reading it can push a single question past the context limit.
     '--disallowedTools', 'Read(floorplan/index.html)', 'Read(floorplan/serve.mjs)', 'Read(floorplan/page-safety.mjs)', 'Read(floorplan/.cache/**)',
-    // No MCP servers: answers only read files and query the map, and the person's own servers (connectors,
-    // plugins) would otherwise load every tool's description into each question, enough to make it
-    // "Prompt is too long" before the question is read. The empty config is one argument, so no shell quoting.
-    '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+    // Only the MCP servers architecture.json names: all of the person's servers (connectors, plugins) would load
+    // every tool's description into each question, enough to make it "Prompt is too long" before it's read.
+    '--strict-mcp-config', '--mcp-config', mcpFile ? mcpFile.file : '{"mcpServers":{}}',
     // only what's allowed here runs: the person's own default mode (auto, acceptEdits, bypass) must not widen it
     '--permission-mode', 'dontAsk',
-    '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob'];
+    '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob', ...(mcpFile?.names || []).map((n) => `mcp__${n}`)];
   // an approved code change: Edit and Write only on the files the person approved (anything else is denied in
   // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
   if (mode.write) {
@@ -644,7 +663,9 @@ async function applyCode(res, send, body) {
 // Tests run code the agent wrote: they get the Go settings and nothing else from this shell (no tokens or keys),
 // and no automatic toolchain download.
 const goEnv = () => ({
-  ...Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(GO(?!FLAGS$)\w*|PATH|HOME|TMPDIR|TEMP|TMP|USER|SystemRoot|LOCALAPPDATA)$/.test(k))),
+  ...Object.fromEntries(['PATH', 'HOME', 'USER', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'LOCALAPPDATA', 'GOPATH', 'GOROOT', 'GOCACHE', 'GOMODCACHE', 'GOTMPDIR', 'GOPROXY',
+    'GOPRIVATE', 'GONOPROXY', 'GONOSUMDB', 'GOSUMDB', 'GOINSECURE', 'GOOS', 'GOARCH', 'GOAMD64', 'GOARM64', 'GOEXPERIMENT', 'GOWORK', 'CGO_ENABLED']
+    .filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
   GOFLAGS: '', GOTOOLCHAIN: 'local',
 });
 const goRun = (args, cwd) => new Promise((resolve) => {
