@@ -179,7 +179,7 @@ On a code map served with the Claude Code CLI, the Ask bar has an **Ask / Change
 
 ### MCP servers for the map's agent (on request)
 
-The Ask bar's agent runs with no MCP servers. When the user wants it to use some of theirs (for example `context7` for library docs, or `atlassian` for Jira and Confluence), add their names to architecture.json: `"mcp": ["context7", "atlassian"]`, then restart the map's server. The names must match servers in their Claude Code config (`claude mcp list`). The server copies just those entries into a private temp file for each agent run, so tokens never go on a command line, and tells the agent to only read with them. An MCP server's write tools are not blocked by the map, so for Jira and Confluence suggest the server's own read-only setting (mcp-atlassian: `READ_ONLY_MODE=true`).
+The Ask bar's agent runs with no MCP servers. When the user wants it to use some of theirs (for example `context7` for library docs, or `atlassian` for Jira and Confluence), add their names to architecture.json: `"mcp": ["context7", "atlassian"]` (these two are the only ones supported, and only their read tools are allowed), then restart the map's server. The names must match servers in their Claude Code config (`claude mcp list`). The server copies just those entries into a private temp file for each agent run, so tokens never go on a command line, and tells the agent to only read with them. Keep mcp-atlassian's own `READ_ONLY_MODE=true` as a second guard.
 
 ### Jira tasks (on request)
 

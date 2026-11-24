@@ -358,7 +358,18 @@ const failCode = (msg) => /not logged in|logged out|\/login|log ?in again|sign i
   : /usage limit|rate limit|too many requests|\b429\b/i.test(msg) ? 'rate_limited' : 'cli_error';
 // MCP servers from the person's own Claude Code config the agent may use, named in architecture.json "mcp".
 // Their config holds the person's tokens, so it goes to a private temp file (removed on exit), never the command line.
-const mcpNames = (() => { try { const m = JSON.parse(fs.readFileSync(path.join(here, 'architecture.json'), 'utf8')).mcp; return Array.isArray(m) ? m.filter((n) => typeof n === 'string' && /^[\w-]+$/.test(n)) : []; } catch { return []; } })();
+// Only these servers, and of each only these read tools: architecture.json can come with a cloned repo or be
+// rewritten by a plan change, so it may pick from the list but never widen it (attachment downloads write files).
+const MCP_READ_TOOLS = {
+  context7: ['resolve-library-id', 'query-docs', 'get-library-docs'],
+  atlassian: ['jira_get_issue', 'jira_search', 'jira_get_project_issues', 'jira_get_transitions', 'jira_get_worklog', 'jira_get_issue_watchers',
+    'jira_get_agile_boards', 'jira_get_board_issues', 'jira_get_sprints_from_board', 'jira_get_sprint_issues', 'jira_get_link_types',
+    'jira_get_all_projects', 'jira_search_projects', 'jira_get_project_versions', 'jira_get_project_components', 'jira_get_issue_dates',
+    'jira_get_issue_development_info', 'jira_get_issues_development_info', 'jira_get_project_epic_hierarchy', 'jira_search_fields', 'jira_get_user_profile',
+    'confluence_search', 'confluence_get_page', 'confluence_get_page_children', 'confluence_get_space_page_tree', 'confluence_get_comments',
+    'confluence_get_inline_comments', 'confluence_get_labels', 'confluence_get_page_history', 'confluence_get_page_diff'],
+};
+const mcpNames = (() => { try { const m = JSON.parse(fs.readFileSync(path.join(here, 'architecture.json'), 'utf8')).mcp; return Array.isArray(m) ? [...new Set(m.filter((n) => Object.hasOwn(MCP_READ_TOOLS, n)))] : []; } catch { return []; } })();
 const mcpFile = (() => {
   if (!mcpNames.length) return null;
   let cfg; try { cfg = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json'), 'utf8')); } catch { return null; }
@@ -386,7 +397,7 @@ function claudeRun(body, mode) {
     '--strict-mcp-config', '--mcp-config', mcpFile ? mcpFile.file : '{"mcpServers":{}}',
     // only what's allowed here runs: the person's own default mode (auto, acceptEdits, bypass) must not widen it
     '--permission-mode', 'dontAsk',
-    '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob', ...(mcpFile?.names || []).map((n) => `mcp__${n}`)];
+    '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob', ...(mcpFile?.names || []).flatMap((n) => MCP_READ_TOOLS[n].map((t) => `mcp__${n}__${t}`))];
   // an approved code change: Edit and Write only on the files the person approved (anything else is denied in
   // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
   if (mode.write) {
