@@ -2160,11 +2160,11 @@ function showAnswer(raw, question) {
   if (a.items.length) { state.answer = a; go('q:answer', { force: true, after: () => renderAnswer(a) }); }
   else renderAnswer(a);
 }
-function showFailure(question, code, message, partial) {
+function showFailure(question, code, message, partial, keep = true) {
   if (code === 'not_logged_in' || code === 'not_granted') setWarning(code);
   if (code === 'not_granted' || code === 'sampling_disabled') setEngine(null, null, code === 'not_granted' ? 'not_granted' : 'app_unavailable');
   if (code === 'cancelled') { sheet.hidden = true; return; }
-  hist.add({ kind: 'error', question, title: 'Didn’t finish', answer: String(message || code || '').slice(0, 600) });
+  if (keep) hist.add({ kind: 'error', question, title: 'Didn’t finish', answer: String(message || code || '').slice(0, 600) });
   const copy = { rate_limited: `${AGENT.name} is busy or you have hit a usage limit. Try again in a bit.`, not_logged_in: `${Cap(AGENT.cli)} needs you to sign in first.`, cli_missing: `${Cap(AGENT.cli)} not found.`, invalid_json: `${AGENT.name}'s answer couldn't be read as a map view. Try rephrasing.`, session_expired: `Your ${AGENT.name} session expired. Sign in again.` }[code];
   sheetShell(question, `<p class="err">${h(copy || message || 'Something went wrong.')}</p>${partial ? md(partial) : ''}${code === 'cli_error' && message ? `<p style="font-family:var(--mono);font-size:11px;color:var(--text-3)">${h(message.slice(0, 400))}</p>` : ''}`);
 }
@@ -2218,7 +2218,7 @@ function useConvo(convo) {
   askState.session = hist.all().filter((t) => t.convo === convo && t.kind === 'ask' && t.session).at(-1)?.session || null;
   askState.turns = [];
 }
-useConvo(hist.all().at(-1)?.convo || newConvo());
+useConvo(hist.all().filter((t) => t.kind !== 'council').at(-1)?.convo || newConvo()); // a council keeps its own conversation
 $('#ask-hist').hidden = EXPORTED || !hist.all().length;
 $('#ask-hist').onclick = showHistory;
 $('#ask-agent').hidden = EXPORTED || !window.FLOORPLAN_SERVER;
@@ -2389,7 +2389,7 @@ async function requestCouncil(question) {
     // Stop after some experts finished keeps what they said
     if (e?.name === 'AbortError' && done.length) showCouncil({ council: true, question, summary: { error: 'Stopped before the summary.' }, roles: Object.fromEntries(EXPERTS.map((k) => [k, got[k] || { error: 'Stopped.' }])) });
     else if (e?.name === 'AbortError') showFailure(question, 'cancelled');
-    else showFailure(question, e?.code || 'upstream_error', e?.message || String(e));
+    else showFailure(question, e?.code || 'upstream_error', e?.message || String(e), '', false); // not in the Ask conversation
   } finally { setBusy(false); }
 }
 /** A council's result: tabs for the summary and each expert, each with its cards on the board. */
@@ -2406,13 +2406,14 @@ function showCouncil(c, tab = 'summary') {
   const items = [];
   for (const x of clean(tab === 'summary' ? [...(a.items || []), ...EXPERTS.flatMap((k) => part(k).items || [])] : a.items)) if (!items.some((y) => y.id === x.id)) items.push(x);
   const view = { title: a.title || COUNCIL[tab], answer: a.answer || '', items: items.slice(0, 18), steps: [], question: c.question, kind: `Council · ${COUNCIL[tab]}`, at: c.at, convo: c.convo };
-  askState.last = view;
+  askState.last = items.length ? view : null;
   const draw = () => {
     sheetShell(c.question, `<div class="ctabs" role="tablist">${Object.keys(COUNCIL).map((k) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === tab}" class="${k === tab ? 'on' : ''}${part(k).error ? ' bad' : ''}">${COUNCIL[k]}</button>`).join('')}</div>
       ${a.error ? `<p class="err">${h(a.error)}</p>` : `<p><strong>${h(view.title)}</strong></p>${md(a.answer)}${usedBlock(a.used)}`}`);
     sheet.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => showCouncil(c, b.dataset.tab));
   };
-  if (items.length) { state.answer = view; go('q:answer', { force: true, after: draw }); } else draw();
+  // a tab without cards mustn't leave another tab's cards on the board
+  if (items.length) { state.answer = view; go('q:answer', { force: true, after: draw }); } else if (state.container === 'q:answer') go('root', { after: draw }); else draw();
 }
 
 async function askViaCli(question, progress, mode = 'ask', session, onRole) {
