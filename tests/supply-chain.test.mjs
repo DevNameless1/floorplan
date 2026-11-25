@@ -103,7 +103,7 @@ test('it runs a fixed list of programs, and never through a shell', () => {
   assert.deepEqual(find(/(?<![.\w])(exec|execSync|fork|spawnSync|execFile)\(/).map((x) => `${x.file}:${x.line} ${x.text}`), [], `other ways to start programs. ${UPDATE}`);
   assert.deepEqual(find(/shell:\s*true/).map((x) => `${x.file}:${x.line}`), [], 'never through a shell');
   // what each call starts: where/which, the Claude Code or Codex CLI, Node running the skill's own scripts,
-  // git, go (build and test after a code change), and the system's "open this address in the browser" command
+  // git, go (its module cache path), podman (build and test after a code change), and the system's "open this address in the browser" command
   const ALLOWED = new Set([
     "process.platform === 'win32' ? 'where' : 'which'",
     'cli.cmd',
@@ -111,6 +111,7 @@ test('it runs a fixed list of programs, and never through a shell', () => {
     'node',
     "'git'",
     "'go'",
+    "'podman'",
     'opener[0]',
     'cmd',
   ]);

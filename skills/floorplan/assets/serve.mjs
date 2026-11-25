@@ -724,7 +724,7 @@ async function applyCode(res, send, body) {
       data = { ...fix, items: [...(fix.items || []), ...(data.items || []).filter((x) => !ids.has(x?.id))], used: mergeUsed(data.used, fix.used) };
       check = await goCheck(paths, send);
     }
-    if (check) data.answer = `${data.answer || ''}\n\n${check.failed ? `**go build / go test still fail:**\n\n\`\`\`\n${check.output.slice(-1500)}\n\`\`\`` : `✓ go build and go test pass (${check.where}).`}`;
+    if (check) data.answer = `${data.answer || ''}\n\n${check.failed ? `**go build / go test still fail:**\n\n\`\`\`\n${check.output.slice(-1500)}\n\`\`\`` : check.skipped ? `go build and go test were not run: ${check.where}.` : `✓ go build and go test pass (${check.where}).`}`;
     const items = (Array.isArray(data.items) ? data.items : []).filter((x) => typeof x?.id === 'string')
       .map((x) => ({ ref: x.id.replace(/^f:/, ''), change: 'changed', note: String(x.note || '') }));
     const plain = String(data.answer || '').split(/\n\s*\n/)[0].replace(/\*\*|__|`/g, '').replace(/\s+/g, ' ').trim();
@@ -732,31 +732,33 @@ async function applyCode(res, send, body) {
     send('progress', { text: 'Redrawing the map' });
     try { skillScript('refresh.mjs'); } catch (e) { console.error(`✗ couldn't redraw the map after a code change: ${String(e.message || e).slice(0, 500)}`); }
     console.log(`code changed: ${data.title || request.slice(0, 60)}`);
-    const used = check ? mergeUsed(data.used, [{ kind: 'tool', name: 'go build + go test (run by the map server)', count: 1, detail: [] }]) : data.used || [];
+    const used = check ? mergeUsed(data.used, [{ kind: 'tool', name: 'go build + go test (map server, in Podman)', count: 1, detail: [] }]) : data.used || [];
     send('answer', { title: String(data.title || ''), summary: String(data.answer || ''), changes: items.length, followups: [], used });
   } catch (e) {
     if (e !== CLOSED) send('failure', { code: failCode(String(e.message || e)), message: String(e.message || e) });
   } finally { changing = false; res.end(); }
 }
 
-// The agent itself has no shell beyond the map query: Bash rules match by prefix, so `go test` would also let
-// it through with -exec or -toolexec. The server runs the checks and hands the agent the failures instead.
-// Tests run code the agent wrote: they get the Go settings and nothing else from this shell (no tokens or keys),
-// and no automatic toolchain download.
-const goEnv = () => ({
-  ...Object.fromEntries(['PATH', 'HOME', 'USER', 'TMPDIR', 'TEMP', 'TMP', 'SystemRoot', 'LOCALAPPDATA', 'GOPATH', 'GOROOT', 'GOCACHE', 'GOMODCACHE', 'GOTMPDIR', 'GOPROXY',
-    'GOPRIVATE', 'GONOPROXY', 'GONOSUMDB', 'GOSUMDB', 'GOINSECURE', 'GOOS', 'GOARCH', 'GOAMD64', 'GOARM64', 'GOEXPERIMENT', 'GOWORK', 'CGO_ENABLED']
-    .filter((k) => process.env[k] !== undefined).map((k) => [k, process.env[k]])),
-  GOFLAGS: '', GOTOOLCHAIN: 'local',
-});
-const goRun = (args, cwd) => new Promise((resolve) => {
-  const child = spawn('go', args, { cwd, timeout: 300000, windowsHide: true, env: goEnv(), stdio: ['ignore', 'pipe', 'pipe'] });
+// The agent itself gets no go command (Bash rules match by prefix, so `go test` would also pass with -exec or
+// -toolexec). The server runs the checks in a Podman container instead, since tests run code the agent wrote:
+// no network, the project read-only, nothing from this shell's environment or the home folder. Modules come
+// first from a separate step that runs no project code (go mod download), from this machine's module cache,
+// then the public proxy.
+const hostModCache = (() => {
+  if (process.env.GOMODCACHE) return process.env.GOMODCACHE;
+  try { return execFileSync('go', ['env', 'GOMODCACHE'], { encoding: 'utf8', timeout: 15000, stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true }).trim(); } catch {}
+  return path.join(os.homedir(), 'go', 'pkg', 'mod');
+})();
+const podman = (args, timeout = 600000) => new Promise((resolve) => {
+  const child = spawn('podman', args, { timeout, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
   let text = '';
   const add = (d) => { text = (text + d).slice(-20000); };
   child.stdout.on('data', add); child.stderr.on('data', add);
   child.on('error', (e) => resolve({ ok: false, missing: e.code === 'ENOENT', text: e.message }));
-  child.on('close', (code) => resolve({ ok: code === 0, text: text.trim() }));
+  child.on('close', (code) => resolve({ ok: code === 0, text: text.replaceAll('/src/', '').trim() }));
 });
+/** The official Go image for the go.mod's Go version, e.g. docker.io/library/golang:1.27. */
+const goImage = (dir) => { try { const v = /^go\s+(\d+\.\d+)/m.exec(fs.readFileSync(path.join(dir, 'go.mod'), 'utf8'))?.[1]; return `docker.io/library/golang:${v || '1'}`; } catch { return 'docker.io/library/golang:1'; } };
 /** go build ./... and go test on the edited packages, per Go module the approved .go files are in; null when there are none. */
 async function goCheck(paths, send) {
   const top = fs.realpathSync.native(root);
@@ -770,23 +772,37 @@ async function goCheck(paths, send) {
     mods.get(d).add('./' + path.relative(d, path.dirname(f)).split(path.sep).join('/'));
   }
   if (!mods.size) return null;
+  if (/[:,]/.test(top)) return { failed: false, skipped: true, where: 'the project path has a colon or comma, which Podman can’t mount' };
+  const ping = await podman(['info', '--format', '{{.Host.Arch}}'], 60000);
+  if (!ping.ok) return { failed: false, skipped: true, where: ping.missing ? 'Podman is not installed' : 'Podman isn’t running (podman machine start)' };
+  const hostProxy = path.join(hostModCache, 'cache', 'download');
+  const locked = ['--rm', '--network=none', '--cap-drop=all', '--security-opt=no-new-privileges', '-v', `${top}:/src:ro`, '-v', 'floorplan-gomod:/go/pkg/mod:ro',
+    '-v', 'floorplan-gocache:/root/.cache/go-build', '-e', 'GOFLAGS=-mod=readonly', '-e', 'GOPROXY=off', '-e', 'GOTOOLCHAIN=local'];
   const where = [], fails = [];
   for (const [dir, pkgs] of mods) {
     const name = path.relative(top, dir).split(path.sep).join('/') || '.';
+    const wd = ['-w', '/src/' + (name === '.' ? '' : name)];
+    const img = goImage(dir);
     where.push(name);
-    send('progress', { text: `Building ${name}` });
-    // main packages' binaries go to a throwaway folder, not into the project
-    const bin = fs.mkdtempSync(path.join(os.tmpdir(), 'floorplan-go-'));
-    const b = await goRun(['build', '-o', bin, './...'], dir);
-    fs.rmSync(bin, { recursive: true, force: true });
-    if (b.missing) return { failed: false, where: 'skipped: go is not installed' };
-    if (!b.ok) { fails.push(`$ go build ./...   (in ${name})\n${b.text.slice(-3000)}`); continue; }
-    send('progress', { text: `Testing ${name}` });
+    if (!(await podman(['image', 'exists', img], 60000)).ok) {
+      send('progress', { text: `Downloading ${img.split('/').pop()} (first time only)` });
+      const pull = await podman(['pull', '-q', img]);
+      if (!pull.ok) { fails.push(`$ podman pull ${img}\n${pull.text.slice(-1500)}`); continue; }
+    }
+    send('progress', { text: `Fetching Go modules for ${name}` });
+    const dl = await podman(['run', '--rm', '--cap-drop=all', '--security-opt=no-new-privileges', '-v', `${top}:/src:ro`, ...(fs.existsSync(hostProxy) && !/[:,]/.test(hostProxy) ? ['-v', `${hostProxy}:/hostproxy:ro`] : []),
+      '-v', 'floorplan-gomod:/go/pkg/mod', ...wd, '-e', `GOPROXY=${fs.existsSync(hostProxy) ? 'file:///hostproxy,' : ''}https://proxy.golang.org`, '-e', 'GOSUMDB=off', '-e', 'GOTOOLCHAIN=local', '-e', 'GOFLAGS=-mod=mod',
+      img, 'go', 'mod', 'download']);
+    if (!dl.ok) { fails.push(`$ go mod download   (in ${name}, Podman)\n${dl.text.slice(-3000)}`); continue; }
+    send('progress', { text: `Building ${name} in Podman` });
+    const b = await podman(['run', ...locked, ...wd, img, 'go', 'build', '-o', '/tmp/out/', './...']);
+    if (!b.ok) { fails.push(`$ go build ./...   (in ${name}, Podman)\n${b.text.slice(-3000)}`); continue; }
+    send('progress', { text: `Testing ${name} in Podman` });
     // ponytail: only the edited packages' tests; callers in other packages are covered by the build alone
-    const t = await goRun(['test', '-count=1', ...[...pkgs].map((p) => p === './' ? '.' : p)], dir);
-    if (!t.ok) fails.push(`$ go test   (in ${name})\n${t.text.slice(-3000)}`);
+    const t = await podman(['run', ...locked, ...wd, img, 'go', 'test', '-count=1', ...[...pkgs].map((p) => p === './' ? '.' : p)]);
+    if (!t.ok) fails.push(`$ go test   (in ${name}, Podman)\n${t.text.slice(-3000)}`);
   }
-  return { failed: fails.length > 0, output: fails.join('\n\n'), where: where.join(', ') };
+  return { failed: fails.length > 0, output: fails.join('\n\n'), where: `${where.join(', ')}, in Podman` };
 }
 
 function mergeUsed(a = [], b = []) {
