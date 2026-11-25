@@ -193,6 +193,23 @@ if (cli) { try { version = execFileSync(cli.cmd, [...cli.args, '--version'], { e
 // code). Loaded at start and again whenever the map is rebuilt.
 const inject = `<script>window.FLOORPLAN_SERVER=${scriptJson({ token, cli: !!cli, engine, want, version, model: model || null, change: canChange, code: engine === 'claude', editor })};</script>`;
 let page, G, core, MODES;
+// The whole product at a glance, put in front of every question so the agent starts from all of it (the full
+// map is too big to send): systems, flows and recent work, plus which parts talk to which and how.
+function productContext(g, q) {
+  const fileMod = new Map(g.files.map((f) => [f.p, f.n]));
+  const label = new Map(g.nodes.map((n) => [n.id, n.label]));
+  const mod = (id) => (id.startsWith('f:') ? fileMod.get(id.slice(2)) : id.startsWith('n:') ? id.slice(2) : null);
+  const pairs = new Map();
+  for (const l of g.links) {
+    const a = mod(l.a), b = mod(l.b);
+    if (!a || !b || a === b) continue;
+    const k = `${a}|${b}|${l.k}`;
+    pairs.set(k, (pairs.get(k) || 0) + (l.w || 1));
+  }
+  const links = [...pairs].sort((x, y) => y[1] - x[1]).slice(0, 150)
+    .map(([k, w]) => { const [a, b, kind] = k.split('|'); return `n:${a} (${label.get(a) || a}) -> n:${b} (${label.get(b) || b}): ${kind} x${w}`; });
+  return `What the product is, from the map (you don't need to query the overview again):\n${JSON.stringify(q.overview())}\n\nWhich parts use which (module -> module: kind x weight):\n${links.join('\n')}`;
+}
 function load() {
   const html = fs.readFileSync(path.join(here, 'index.html'), 'utf8');
   const g = readJson(path.join(here, 'graph.json'));
@@ -202,14 +219,15 @@ function load() {
   // the served page's policy covers this script too, and lets the page talk to this server and nothing else
   page = withPolicy(html.replace('</head>', inject + '</head>'), 'local');
   G = g; core = c;
+  const context = productContext(g, c.q);
   // kinds of request: a question (answer + board), a new guided flow, and for a blueprint, a change to the
   // plan. Codex reads its schema from a file.
   MODES = {
-    ask: { instructions: core.floorplanAskInstructions(G, 'cli'), schema: core.FLOORPLAN_ANSWER_SCHEMA, file: path.join(here, '.cache', 'answer-schema.json') },
+    ask: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}`, schema: core.FLOORPLAN_ANSWER_SCHEMA, file: path.join(here, '.cache', 'answer-schema.json') },
     flow: { instructions: core.floorplanFlowInstructions(G, 'cli'), schema: core.FLOORPLAN_FLOW_SCHEMA, file: path.join(here, '.cache', 'flow-schema.json') },
     // a code map: a change to the code is proposed first (read-only), then made once the person approves it
     ...(!G.meta?.blueprint && engine === 'claude' ? {
-      propose: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${PROPOSE_TEXT}`, schema: PROPOSE_SCHEMA },
+      propose: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}\n\n${PROPOSE_TEXT}`, schema: PROPOSE_SCHEMA },
       apply: { instructions: APPLY_TEXT, schema: core.FLOORPLAN_ANSWER_SCHEMA, write: true },
     } : {}),
     ...(G.meta?.blueprint && canChange ? { change: { instructions: core.floorplanChangeInstructions(G), schema: core.FLOORPLAN_CHANGE_SCHEMA, file: path.join(here, '.cache', 'change-schema.json') } } : {}),
