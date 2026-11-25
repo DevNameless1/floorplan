@@ -777,7 +777,11 @@ async function goCheck(paths, send) {
   if (!ping.ok) return { failed: false, skipped: true, where: ping.missing ? 'Podman is not installed' : 'Podman isn’t running (podman machine start)' };
   const hostProxy = path.join(hostModCache, 'cache', 'download');
   const locked = ['--rm', '--network=none', '--cap-drop=all', '--security-opt=no-new-privileges', '-v', `${top}:/src:ro`, '-v', 'floorplan-gomod:/go/pkg/mod:ro',
-    '-v', 'floorplan-gocache:/root/.cache/go-build', '-e', 'GOFLAGS=-mod=readonly', '-e', 'GOPROXY=off', '-e', 'GOTOOLCHAIN=local'];
+    '-e', 'GOFLAGS=-mod=readonly', '-e', 'GOPROXY=off', '-e', 'GOTOOLCHAIN=local'];
+  // The build runs no project code, so it may keep a build cache (one per project). Tests do run it, so they get
+  // a throwaway cache in memory: they can't plant anything a later build would pick up.
+  const buildCache = ['-v', `floorplan-gocache-${crypto.createHash('sha256').update(top).digest('hex').slice(0, 12)}:/root/.cache/go-build`];
+  const testCache = ['--tmpfs', '/root/.cache/go-build:rw,exec'];
   const where = [], fails = [];
   for (const [dir, pkgs] of mods) {
     const name = path.relative(top, dir).split(path.sep).join('/') || '.';
@@ -795,11 +799,11 @@ async function goCheck(paths, send) {
       img, 'go', 'mod', 'download']);
     if (!dl.ok) { fails.push(`$ go mod download   (in ${name}, Podman)\n${dl.text.slice(-3000)}`); continue; }
     send('progress', { text: `Building ${name} in Podman` });
-    const b = await podman(['run', ...locked, ...wd, img, 'go', 'build', '-o', '/tmp/out/', './...']);
+    const b = await podman(['run', ...locked, ...buildCache, ...wd, img, 'go', 'build', '-o', '/tmp/out/', './...']);
     if (!b.ok) { fails.push(`$ go build ./...   (in ${name}, Podman)\n${b.text.slice(-3000)}`); continue; }
     send('progress', { text: `Testing ${name} in Podman` });
     // ponytail: only the edited packages' tests; callers in other packages are covered by the build alone
-    const t = await podman(['run', ...locked, ...wd, img, 'go', 'test', '-count=1', ...[...pkgs].map((p) => p === './' ? '.' : p)]);
+    const t = await podman(['run', ...locked, ...testCache, ...wd, img, 'go', 'test', '-count=1', ...[...pkgs].map((p) => p === './' ? '.' : p)]);
     if (!t.ok) fails.push(`$ go test   (in ${name}, Podman)\n${t.text.slice(-3000)}`);
   }
   return { failed: fails.length > 0, output: fails.join('\n\n'), where: `${where.join(', ')}, in Podman` };
