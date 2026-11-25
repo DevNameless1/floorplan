@@ -411,7 +411,7 @@ function claudeRun(body, mode) {
   return {
     args, input: String(body.question || '').slice(0, 4000),
     onEvent(ev, out) {
-      if (ev.type === 'assistant') for (const c of ev.message?.content || []) if (c.type === 'tool_use') out.progress(describeTool(c.name, c.input));
+      if (ev.type === 'assistant') for (const c of ev.message?.content || []) if (c.type === 'tool_use') { out.used(c.name, c.input); out.progress(describeTool(c.name, c.input)); }
       if (ev.type !== 'result') return;
       if (ev.is_error) out.fail(String(ev.result || ev.subtype || 'Claude Code reported an error'));
       else out.answer({ ...parseAnswer(ev), session: ev.session_id });
@@ -434,7 +434,7 @@ function codexRun(body, mode) {
   return {
     args, input: `${mode.instructions}${earlier}\n\nThe question:\n${question}`,
     onEvent(ev, out) {
-      if (ev.type === 'item.started' && ev.item?.type === 'command_execution') out.progress(describeCommand(ev.item.command));
+      if (ev.type === 'item.started' && ev.item?.type === 'command_execution') { out.used('Bash', { command: ev.item.command }); out.progress(describeCommand(ev.item.command)); }
       if (ev.type === 'item.completed' && ev.item?.type === 'agent_message') last = String(ev.item.text || '');
       if (ev.type === 'error') error = String(ev.message || error);
       if (ev.type === 'turn.failed') out.fail(String(ev.error?.message || error || 'Codex reported an error'));
@@ -493,9 +493,23 @@ function runAgent(res, send, body) {
     let quiet = null, said = '';
     const say = (text) => { if (!done && text !== said) { said = text; send('progress', { text }); } };
     const hush = () => { clearTimeout(quiet); if (body.mode === 'change' && !done) quiet = setTimeout(() => say('Working on the updated plan'), 12000); };
+    // what the agent used, shown with the answer: skills, MCP tools and built-in tools, with counts
+    const used = new Map();
     const out = {
+      used(name, input = {}) {
+        if (name === 'StructuredOutput') return;
+        const mcp = /^mcp__(.+?)__(.+)$/.exec(name);
+        const u = name === 'Skill' ? { kind: 'skill', name: String(input.skill || input.name || 'skill') }
+          : mcp ? { kind: 'mcp', name: `${mcp[1]} · ${mcp[2]}` } : { kind: 'tool', name };
+        const k = `${u.kind}:${u.name}`;
+        const e = used.get(k) || { ...u, count: 0, detail: [] };
+        e.count++;
+        const d = name === 'Bash' ? String(input.command || '') : '';
+        if (d && e.detail.length < 3 && !e.detail.includes(d.slice(0, 120))) e.detail.push(d.slice(0, 120));
+        used.set(k, e);
+      },
       progress: (text) => { if (!done) { say(text); hush(); } },
-      answer: (data) => { if (!done) { done = true; clearTimeout(quiet); resolve(data); } },
+      answer: (data) => { if (!done) { done = true; clearTimeout(quiet); resolve({ ...data, used: [...used.values()] }); } },
       fail: (message) => { if (!done) { done = true; clearTimeout(quiet); reject(new Error(message)); } },
     };
     hush();
@@ -620,7 +634,7 @@ async function changePlan(res, send, body) {
       const r = applyChange(data, request, attempt === 1);
       if (r.ok) {
         console.log(`plan changed: ${data.title || request.slice(0, 60)}`);
-        send('answer', { title: String(data.title || ''), summary: String(data.summary || ''), changes: (data.changes || []).length, followups: Array.isArray(data.followups) ? data.followups.map(String).slice(0, 3) : [], undo: r.undo });
+        send('answer', { title: String(data.title || ''), summary: String(data.summary || ''), changes: (data.changes || []).length, followups: Array.isArray(data.followups) ? data.followups.map(String).slice(0, 3) : [], undo: r.undo, used: data.used || [] });
         return;
       }
       errors = r.errors;
@@ -652,7 +666,7 @@ async function applyCode(res, send, body) {
       last = same(check);
       const fix = await runAgent(res, send, { question: `The map server ran go build and go test after your edits and they failed:\n\n${check.output}\n\nFix it, still only in the approved files. If a failure isn't caused by your change, leave it and say so.`, session: String(data.session || body.session), mode: 'apply', paths });
       const ids = new Set((fix.items || []).map((x) => x?.id));
-      data = { ...fix, items: [...(fix.items || []), ...(data.items || []).filter((x) => !ids.has(x?.id))] };
+      data = { ...fix, items: [...(fix.items || []), ...(data.items || []).filter((x) => !ids.has(x?.id))], used: mergeUsed(data.used, fix.used) };
       check = await goCheck(paths, send);
     }
     if (check) data.answer = `${data.answer || ''}\n\n${check.failed ? `**go build / go test still fail:**\n\n\`\`\`\n${check.output.slice(-1500)}\n\`\`\`` : `✓ go build and go test pass (${check.where}).`}`;
@@ -663,7 +677,8 @@ async function applyCode(res, send, body) {
     send('progress', { text: 'Redrawing the map' });
     try { skillScript('refresh.mjs'); } catch (e) { console.error(`✗ couldn't redraw the map after a code change: ${String(e.message || e).slice(0, 500)}`); }
     console.log(`code changed: ${data.title || request.slice(0, 60)}`);
-    send('answer', { title: String(data.title || ''), summary: String(data.answer || ''), changes: items.length, followups: [] });
+    const used = check ? mergeUsed(data.used, [{ kind: 'tool', name: 'go build + go test (run by the map server)', count: 1, detail: [] }]) : data.used || [];
+    send('answer', { title: String(data.title || ''), summary: String(data.answer || ''), changes: items.length, followups: [], used });
   } catch (e) {
     if (e !== CLOSED) send('failure', { code: failCode(String(e.message || e)), message: String(e.message || e) });
   } finally { changing = false; res.end(); }
@@ -719,6 +734,11 @@ async function goCheck(paths, send) {
   return { failed: fails.length > 0, output: fails.join('\n\n'), where: where.join(', ') };
 }
 
+function mergeUsed(a = [], b = []) {
+  const m = new Map();
+  for (const u of [...a, ...b]) { const k = `${u.kind}:${u.name}`; const e = m.get(k); e ? (e.count += u.count, e.detail = [...new Set([...e.detail, ...u.detail])].slice(0, 3)) : m.set(k, { ...u, detail: [...u.detail] }); }
+  return [...m.values()];
+}
 /** Puts back the files a change replaced (the newest first), and redraws. */
 function undoChange() {
   const all = fs.existsSync(historyDir) ? fs.readdirSync(historyDir).sort() : [];

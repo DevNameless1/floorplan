@@ -432,6 +432,11 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 #ask-sheet .earlier details { margin: 0 0 6px; }
 #ask-sheet .earlier summary { cursor: pointer; color: var(--text-3); font-size: 13px; }
 #ask-sheet .earlier details[open] { padding-bottom: 6px; }
+#ask-sheet .used { margin: 10px 0 0; padding-top: 8px; border-top: 1px solid rgba(var(--ink), .08); font-size: 12.5px; color: var(--text-3); }
+#ask-sheet .used summary { cursor: pointer; }
+#ask-sheet .used > div { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 5px 0 0; }
+#ask-sheet .used .ul { width: 52px; flex: none; }
+#ask-sheet .used .uchip { background: rgba(var(--ink), .07); color: var(--text-2, var(--text)); border-radius: 6px; padding: 1px 7px; font-family: var(--mono); font-size: 11.5px; }
 #ask-sheet .hconvo { margin: 0 0 14px; }
 #ask-sheet .hhead { color: var(--text-3); font-size: 12px; margin: 0 0 4px; }
 #ask-sheet .hitem { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text); font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -2126,6 +2131,7 @@ function renderAnswer(a) {
   const steps = a.steps?.length >= 2;
   sheetShell(a.question, `${earlierTurns(a)}${md(a.answer)}
     <div class="sheet-actions">${steps ? `<button class="btn soft" data-act="steps">${iconI('right')}Walk through ${a.steps.length} steps</button>` : ''}</div>
+    ${usedBlock(a.used)}
     ${a.followups?.length ? `<div class="followups">${a.followups.slice(0, 3).map((f) => `<button data-follow="${hk(f)}">${h(f)}</button>`).join('')}</div>` : ''}`);
 }
 function showAnswer(raw, question) {
@@ -2133,7 +2139,7 @@ function showAnswer(raw, question) {
   const items = clean(raw.items);
   const steps = clean(raw.steps);
   for (const s of steps) if (!items.some((x) => x.id === s.id)) items.push({ id: s.id, note: s.note });
-  const a = { title: String(raw.title || 'Answer'), answer: String(raw.answer || ''), items: items.slice(0, 18), steps, followups: (raw.followups || []).map(String), question };
+  const a = { title: String(raw.title || 'Answer'), answer: String(raw.answer || ''), items: items.slice(0, 18), steps, followups: (raw.followups || []).map(String), question, used: raw.used };
   if (!raw.fromHistory) Object.assign(a, hist.add({ kind: 'ask', session: askState.session, ...a }));
   else Object.assign(a, { at: raw.at, convo: raw.convo });
   askState.last = a;
@@ -2206,6 +2212,14 @@ function earlierTurns(a) {
   const prev = hist.all().filter((t) => t.convo === (a.convo || askState.convo) && t.at < (a.at || Infinity)).slice(-6);
   return prev.length ? `<div class="earlier">${prev.map((t) => `<details><summary>${h(KIND[t.kind] || '')}: ${h(t.question)}</summary>${t.title ? `<p><strong>${h(t.title)}</strong></p>` : ''}${md(t.answer)}</details>`).join('')}</div>` : '';
 }
+/** What the agent used for one answer: skills, MCP tools, built-in tools (hover a tool for its commands). */
+function usedBlock(used) {
+  if (!Array.isArray(used)) return '';
+  const of = (kind) => used.filter((u) => u.kind === kind);
+  const chip = (u) => `<span class="uchip" title="${hk((u.detail || []).join('\n'))}">${h(u.name)}${u.count > 1 ? ` ×${u.count}` : ''}</span>`;
+  const row = (label, list) => `<div><span class="ul">${label}</span>${list.length ? list.map(chip).join('') : '<span>none</span>'}</div>`;
+  return `<details class="used" open><summary>What the agent used</summary>${row('Skills', of('skill'))}${row('MCP', of('mcp'))}${row('Tools', of('tool'))}</details>`;
+}
 function openTurn(t) {
   useConvo(t.convo);
   showAnswer({ ...t, fromHistory: true }, t.question);
@@ -2232,7 +2246,7 @@ async function requestChange(question) {
   showProgress(question, lines);
   try {
     const r = await askViaCli(question, progress, 'change');
-    stash.set({ question, title: r.title, summary: r.summary, followups: r.followups || [], undo: r.undo, at: Date.now() });
+    stash.set({ question, title: r.title, summary: r.summary, followups: r.followups || [], undo: r.undo, used: r.used, at: Date.now() });
     progress('Redrawing the map');
     setTimeout(() => location.reload(), 4000); // in case the reload notice doesn't arrive
   } catch (e) {
@@ -2256,12 +2270,12 @@ async function requestCodeChange(question) {
   const edits = (r.edits || []).filter((e) => e && e.path);
   const onMap = edits.filter((e) => Q.exists('f:' + e.path)).map((e) => ({ id: 'f:' + e.path, note: `${verb[e.change] || 'Will change'}: ${e.note || ''}` }));
   const affected = (r.items || []).filter((x) => x && Q.exists(String(x.id)) && !onMap.some((m) => m.id === x.id)).map((x) => ({ id: String(x.id), note: `Affected: ${x.note || ''}` }));
-  const p = { title: String(r.title || 'Proposed change'), answer: String(r.answer || ''), items: [...onMap, ...affected].slice(0, 24), steps: [], followups: [], question, edits, session: r.session };
-  hist.add({ kind: 'proposal', question, title: p.title, answer: `${p.answer}${edits.length ? `\n\n**Files to edit:**\n${edits.map((e) => `- \`${e.path}\` · ${verb[e.change] || 'Will change'}: ${e.note || ''}`).join('\n')}` : ''}`, items: p.items });
+  const p = { title: String(r.title || 'Proposed change'), answer: String(r.answer || ''), items: [...onMap, ...affected].slice(0, 24), steps: [], followups: [], question, edits, session: r.session, used: r.used };
+  hist.add({ kind: 'proposal', question, used: r.used, title: p.title, answer: `${p.answer}${edits.length ? `\n\n**Files to edit:**\n${edits.map((e) => `- \`${e.path}\` · ${verb[e.change] || 'Will change'}: ${e.note || ''}`).join('\n')}` : ''}`, items: p.items });
   askState.last = p;
   const render = () => {
     const list = edits.length ? `<p><strong>Files to edit (${edits.length})</strong></p><ul>${edits.map((e) => `<li><code>${h(e.path)}</code> · ${h(verb[e.change] || 'Will change')}: ${h(e.note || '')}</li>`).join('')}</ul>${affected.length ? `<p><strong>Also affected:</strong> ${affected.length} item(s), shown on the board</p>` : ''}` : '';
-    sheetShell(question, `${md(p.answer)}${list}
+    sheetShell(question, `${md(p.answer)}${list}${usedBlock(p.used)}
       <div class="sheet-actions">${edits.length ? `<button class="btn" data-cc="apply">${iconI('right')}Apply changes</button><button class="btn soft" data-cc="cancel">Cancel</button>` : ''}</div>`);
     sheet.querySelector('[data-cc="cancel"]')?.addEventListener('click', () => { sheet.hidden = true; toast('Nothing was changed'); });
     sheet.querySelector('[data-cc="apply"]')?.addEventListener('click', () => applyCodeChange(p));
@@ -2276,7 +2290,7 @@ async function applyCodeChange(p) {
   showProgress(p.question, lines);
   try {
     const r = await askViaCli(p.question, progress, 'apply', p.session);
-    stash.set({ question: p.question, title: r.title, summary: r.summary, followups: [], code: true, at: Date.now() });
+    stash.set({ question: p.question, title: r.title, summary: r.summary, followups: [], code: true, used: r.used, at: Date.now() });
     progress('Redrawing the map');
     setTimeout(() => location.reload(), 4000);
   } catch (e) {
@@ -2292,9 +2306,9 @@ function showChangeResult() {
   if (c.undone) { toast('Change undone'); return; }
   if (Date.now() - c.at > 120000) return;
   const items = (G.recent?.items || []).filter((x) => parentOf.has(x.id)).map((x) => ({ id: x.id, note: x.note }));
-  hist.add({ kind: c.code ? 'change' : 'plan', question: c.question, title: c.title || 'Plan updated', answer: String(c.summary || ''), items: items.slice(0, 24) });
+  hist.add({ kind: c.code ? 'change' : 'plan', used: c.used, question: c.question, title: c.title || 'Plan updated', answer: String(c.summary || ''), items: items.slice(0, 24) });
   closeSheet(); // a card in the link opens the details sheet on a phone, and it would sit on top of this summary
-  sheetShell(c.question, `<p><strong>${h(c.title || 'Plan updated')}</strong></p>${md(c.summary)}
+  sheetShell(c.question, `<p><strong>${h(c.title || 'Plan updated')}</strong></p>${md(c.summary)}${usedBlock(c.used)}
     <div class="sheet-actions">${items.length ? `<button class="btn soft" data-cr="show">${iconI('search')}Show ${plural(items.length, 'change')}</button>` : ''}${c.code ? '' : `<button class="btn soft" data-cr="undo">${iconI('left')}Undo</button>`}</div>${c.code ? '<p style="font-size:12px;color:var(--text-3)">To undo, use git in the repo: the map only shows what changed.</p>' : ''}
     ${c.followups?.length ? `<div class="followups">${c.followups.slice(0, 3).map((f) => `<button data-cf="${hk(f)}">${h(f)}</button>`).join('')}</div>` : ''}`);
   sheet.querySelector('[data-cr="show"]')?.addEventListener('click', () => showBoard({ title: c.title || 'What changed', question: c.question, items }));
