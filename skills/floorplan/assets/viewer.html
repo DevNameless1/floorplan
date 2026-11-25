@@ -396,7 +396,7 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 
 /* ---------- ask ---------- */
 #ask { position: absolute; left: calc((100% - var(--pw)) / 2); bottom: 20px; transform: translateX(-50%); width: min(700px, calc(100% - var(--pw) - 320px)); min-width: 320px; z-index: 4; display: flex; flex-direction: column; gap: 10px; transition: left .45s var(--ease), width .45s var(--ease); }
-#ask-form { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 18px; border-radius: 28px; transition: box-shadow .25s var(--ease); flex-wrap: wrap; }
+#ask-form { display: flex; align-items: center; gap: 8px 10px; padding: 8px 8px 8px 18px; border-radius: 22px; transition: box-shadow .25s var(--ease); flex-wrap: wrap; }
 #ask-form:focus-within { box-shadow: 0 0 0 1px rgba(var(--ink), .16), var(--shadow-deep); }
 #ask-chips { display: contents; }
 .chip { display: inline-flex; align-items: center; gap: 7px; height: 30px; padding: 0 6px 0 8px; border-radius: 999px; background: rgba(var(--ink), .08); font-size: 12.5px; max-width: 220px; animation: chipIn .3s var(--ease); }
@@ -412,7 +412,13 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 #ask-mode button:hover { color: var(--text); }
 #ask-mode button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
 #ask-mode button:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
-#ask-input { flex: 1; min-width: 160px; height: 38px; background: none; border: 0; outline: none; font-size: 15px; color: var(--text); }
+/* the text gets the whole first row and grows with it; chips sit above it, the controls below */
+#ask-form .chip { order: -2; }
+#ask-input { order: -1; flex: 1 0 100%; min-width: 0; height: 38px; max-height: 40vh; padding: 8px 0; resize: none; background: none; border: 0; outline: none; font: inherit; font-size: 15px; line-height: 1.45; color: var(--text); overflow-y: auto; }
+#ask.big { width: min(960px, calc(100% - 40px)); }
+#ask.big #ask-input { height: 60vh !important; max-height: 60vh; }
+#ask-form .engine { margin-left: auto; }
+#ask-expand.on { color: var(--text); background: rgba(var(--ink), .08); }
 #ask-input::placeholder { color: var(--text-3); }
 #ask-input:disabled { cursor: not-allowed; }
 .engine { font-size: 12px; color: var(--text-3); background: rgba(var(--ink), .05); border-radius: 999px; padding: 4px 10px; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; }
@@ -607,9 +613,10 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
     <div id="ask-live" role="status" aria-live="polite"></div>
     <form id="ask-form" class="glass" autocomplete="off">
       <span id="ask-chips"></span>
-      <input id="ask-input" placeholder="Ask anything about this codebase…" spellcheck="false">
+      <textarea id="ask-input" rows="1" placeholder="Ask anything about this codebase…" spellcheck="false" aria-label="Your request"></textarea>
       <span class="engine" id="ask-engine"><i></i>checking…</span>
       <button id="ask-agent" type="button" title="What the agent may use" aria-label="Agent settings" hidden><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
+      <button id="ask-expand" type="button" title="Bigger editor (⌘/Ctrl+Enter sends)" aria-label="Bigger editor" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
       <button id="ask-hist" type="button" title="History" aria-label="History" hidden><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
       <button id="ask-send" type="submit" title="Ask" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
     </form>
@@ -2487,6 +2494,24 @@ function renderChips() {
   askSend.disabled = !askState.engine;
 }
 askInput.addEventListener('keydown', (ev) => { if (ev.key === 'Backspace' && !askInput.value && askState.context.length) { askState.context.pop(); renderChips(); } });
+// Enter sends and Shift+Enter starts a new line; in the bigger editor Enter is a new line and ⌘/Ctrl+Enter sends
+const askBig = (on) => { $('#ask').classList.toggle('big', on); $('#ask-expand').classList.toggle('on', on); $('#ask-expand').setAttribute('aria-pressed', String(on)); growAsk(); askInput.focus(); };
+function growAsk() { askInput.style.height = 'auto'; askInput.style.height = askInput.scrollHeight + 'px'; }
+const DRAFT_KEY = 'floorplan:draft:' + G.project.name;
+askInput.addEventListener('keydown', (ev) => {
+  if (ev.key === 'Escape' && $('#ask').classList.contains('big')) { ev.preventDefault(); askBig(false); return; }
+  if (ev.key !== 'Enter' || ev.isComposing || ev.shiftKey) return;
+  const big = $('#ask').classList.contains('big');
+  if (big && !(ev.metaKey || ev.ctrlKey)) return;
+  ev.preventDefault();
+  if (big) askBig(false);
+  submitAsk();
+});
+askInput.addEventListener('input', () => { growAsk(); try { askInput.value.trim() ? localStorage.setItem(DRAFT_KEY, askInput.value) : localStorage.removeItem(DRAFT_KEY); } catch {} });
+$('#ask-expand').hidden = EXPORTED;
+$('#ask-expand').onclick = () => askBig(!$('#ask').classList.contains('big'));
+try { askInput.value = localStorage.getItem(DRAFT_KEY) || ''; } catch {}
+requestAnimationFrame(growAsk);
 
 async function submitAsk() {
   if (askState.busy) { cancelAsk(); return; }
@@ -2495,6 +2520,8 @@ async function submitAsk() {
   if (!question && ctxIds.length) question = ctxIds.length === 1 ? `What is ${info(ctxIds[0]).name} and how does it fit in?` : `How do ${ctxIds.map((id) => info(id).name).join(' and ')} relate?`;
   if (!question || !askState.engine) return;
   askInput.value = '';
+  growAsk();
+  try { localStorage.removeItem(DRAFT_KEY); } catch {}
   askState.context = []; renderChips();
   if (askState.mode === 'council') return requestCouncil(ctxIds.length ? `${question}\n\nThis is about: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.` : question);
   if (askState.mode === 'change' && !PLAN) return requestCodeChange(ctxIds.length ? `${question}\n\nThis is about: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.` : question);
@@ -2626,7 +2653,7 @@ phoneQuery.addEventListener('change', placeZoom); placeZoom();
 $('#btn-panel').onclick = () => setPanel(document.body.classList.contains('no-panel'));
 Object.assign(state.kinds, store.get('kinds', {}));
 window.addEventListener('keydown', (ev) => {
-  if (pal.classList.contains('open') || ev.target.tagName === 'INPUT') return;
+  if (pal.classList.contains('open') || /^(INPUT|TEXTAREA)$/.test(ev.target.tagName)) return;
   if (ev.key === '/' || (ev.key === 'k' && (ev.metaKey || ev.ctrlKey))) { ev.preventDefault(); openPalette(); }
   else if (ev.key === 'Backspace') { ev.preventDefault(); up(); }
   else if (ev.key === 'Escape') {
@@ -2701,6 +2728,7 @@ window.Floorplan = Object.freeze({
     closeSheet(); // on a phone the open details sheet hides the ask bar, so the request would be typed where nobody can see it
     setAskMode('change');
     askInput.value = text;
+    growAsk();
     askInput.focus();
     askInput.setSelectionRange(text.length, text.length);
     return true;
