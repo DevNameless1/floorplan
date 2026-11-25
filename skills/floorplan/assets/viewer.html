@@ -425,6 +425,18 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 .einfo svg { width: 14px; height: 14px; }
 #ask-send { width: 38px; height: 38px; border-radius: 999px; border: 0; background: var(--on); color: var(--on-text); cursor: pointer; display: grid; place-items: center; flex: none; transition: transform .2s var(--ease), background .2s var(--ease), opacity .2s; }
 #ask-send:hover:not(:disabled) { transform: scale(1.06); background: var(--on-hover); }
+#ask-hist { width: 32px; height: 32px; border-radius: 999px; border: 0; background: none; color: var(--text-3); cursor: pointer; display: grid; place-items: center; flex: none; }
+#ask-hist:hover { background: rgba(var(--ink), .07); color: var(--text); }
+#ask-hist[hidden] { display: none; }
+#ask-sheet .earlier { margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(var(--ink), .08); }
+#ask-sheet .earlier details { margin: 0 0 6px; }
+#ask-sheet .earlier summary { cursor: pointer; color: var(--text-3); font-size: 13px; }
+#ask-sheet .earlier details[open] { padding-bottom: 6px; }
+#ask-sheet .hconvo { margin: 0 0 14px; }
+#ask-sheet .hhead { color: var(--text-3); font-size: 12px; margin: 0 0 4px; }
+#ask-sheet .hitem { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text); font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#ask-sheet .hitem:hover { background: rgba(var(--ink), .06); }
+#ask-sheet .hitem .k { color: var(--text-3); font-size: 12px; margin-right: 6px; }
 #ask-send:disabled { background: rgba(var(--ink), .1); color: var(--text-4); cursor: default; }
 #ask-send.stop { background: rgba(var(--ink), .14); color: var(--text); }
 #ask-warn { display: flex; align-items: center; gap: 12px; padding: 12px 14px 12px 16px; border-radius: 20px; font-size: 13px; line-height: 1.5; color: var(--warn-text); background: var(--warn-sheet); backdrop-filter: blur(16px); animation: sheetIn .35s var(--ease); }
@@ -579,6 +591,7 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
       <span id="ask-chips"></span>
       <input id="ask-input" placeholder="Ask anything about this codebase…" spellcheck="false">
       <span class="engine" id="ask-engine"><i></i>checking…</span>
+      <button id="ask-hist" type="button" title="History" aria-label="History" hidden><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
       <button id="ask-send" type="submit" title="Ask" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
     </form>
   </div>
@@ -771,6 +784,7 @@ const P = {
   x: '<path d="M18 6 6 18M6 6l12 12"/>',
   left: '<path d="m15 18-6-6 6-6"/>',
   right: '<path d="m9 18 6-6-6-6"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 const icon = (k) => `<svg viewBox="0 0 24 24">${P[k] || P.file}</svg>`;
 const iconI = (k) => `<svg class="i" viewBox="0 0 24 24">${P[k] || P.file}</svg>`;
@@ -2088,9 +2102,11 @@ function sheetShell(question, body) {
   sheet.innerHTML = `<div class="sh"><span class="q" title="${h(question)}">${h(question)}</span>
     ${askState.last && state.container !== 'q:answer' ? '<button class="btn soft" data-act="board">Show answer board</button>' : ''}
     ${state.container === 'q:answer' ? '<button class="btn soft" data-act="map">Back to map</button>' : ''}
+    ${hist.all().length && question !== 'History' ? `<button class="btn icon" data-act="hist" title="History">${iconI('clock')}</button>` : ''}
     <button class="btn icon" data-act="close" title="Close">${iconI('x')}</button></div><div class="sb">${body}</div>`;
   sheet.querySelector('[data-act="close"]').onclick = () => { if (askState.busy) cancelAsk(); sheet.hidden = true; if (state.container === 'q:answer') go('root'); else fit(true); };
   sheet.querySelector('[data-act="map"]')?.addEventListener('click', () => go('root'));
+  sheet.querySelector('[data-act="hist"]')?.addEventListener('click', showHistory);
   sheet.querySelector('[data-act="board"]')?.addEventListener('click', () => go('q:answer'));
   sheet.querySelectorAll('[data-ref]').forEach((r) => r.onclick = () => {
     const id = r.dataset.ref;
@@ -2108,7 +2124,7 @@ function showProgress(question, lines) {
 }
 function renderAnswer(a) {
   const steps = a.steps?.length >= 2;
-  sheetShell(a.question, `${md(a.answer)}
+  sheetShell(a.question, `${earlierTurns(a)}${md(a.answer)}
     <div class="sheet-actions">${steps ? `<button class="btn soft" data-act="steps">${iconI('right')}Walk through ${a.steps.length} steps</button>` : ''}</div>
     ${a.followups?.length ? `<div class="followups">${a.followups.slice(0, 3).map((f) => `<button data-follow="${hk(f)}">${h(f)}</button>`).join('')}</div>` : ''}`);
 }
@@ -2118,6 +2134,8 @@ function showAnswer(raw, question) {
   const steps = clean(raw.steps);
   for (const s of steps) if (!items.some((x) => x.id === s.id)) items.push({ id: s.id, note: s.note });
   const a = { title: String(raw.title || 'Answer'), answer: String(raw.answer || ''), items: items.slice(0, 18), steps, followups: (raw.followups || []).map(String), question };
+  if (!raw.fromHistory) Object.assign(a, hist.add({ kind: 'ask', session: askState.session, ...a }));
+  else Object.assign(a, { at: raw.at, convo: raw.convo });
   askState.last = a;
   if (a.items.length) { state.answer = a; go('q:answer', { force: true, after: () => renderAnswer(a) }); }
   else renderAnswer(a);
@@ -2126,6 +2144,7 @@ function showFailure(question, code, message, partial) {
   if (code === 'not_logged_in' || code === 'not_granted') setWarning(code);
   if (code === 'not_granted' || code === 'sampling_disabled') setEngine(null, null, code === 'not_granted' ? 'not_granted' : 'app_unavailable');
   if (code === 'cancelled') { sheet.hidden = true; return; }
+  hist.add({ kind: 'error', question, title: 'Didn’t finish', answer: String(message || code || '').slice(0, 600) });
   const copy = { rate_limited: `${AGENT.name} is busy or you have hit a usage limit. Try again in a bit.`, not_logged_in: `${Cap(AGENT.cli)} needs you to sign in first.`, cli_missing: `${Cap(AGENT.cli)} not found.`, invalid_json: `${AGENT.name}'s answer couldn't be read as a map view. Try rephrasing.`, session_expired: `Your ${AGENT.name} session expired. Sign in again.` }[code];
   sheetShell(question, `<p class="err">${h(copy || message || 'Something went wrong.')}</p>${partial ? md(partial) : ''}${code === 'cli_error' && message ? `<p style="font-family:var(--mono);font-size:11px;color:var(--text-3)">${h(message.slice(0, 400))}</p>` : ''}`);
 }
@@ -2164,6 +2183,47 @@ function addModeSwitch() {
   setAskMode('ask');
 }
 const stash = { get: () => { try { return JSON.parse(sessionStorage.getItem(CHANGE_KEY) || 'null'); } catch { return null; } }, set: (v) => { try { v ? sessionStorage.setItem(CHANGE_KEY, JSON.stringify(v)) : sessionStorage.removeItem(CHANGE_KEY); } catch {} } };
+// ---------- history: every question, proposal and change on this map, kept in this browser ----------
+// Follow-ups go on in the current conversation (the agent's session is resumed), even after a reload.
+const HIST_KEY = 'floorplan:history:' + G.project.name;
+const KIND = { ask: 'Asked', proposal: 'Proposed', change: 'Changed code', plan: 'Changed plan', error: 'Failed' };
+const newConvo = () => Math.random().toString(36).slice(2, 10);
+const hist = {
+  all() { try { const a = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } },
+  save(a) { try { localStorage.setItem(HIST_KEY, JSON.stringify(a.slice(-60))); } catch {} $('#ask-hist').hidden = EXPORTED || !a.length; },
+  add(t) { const e = { ...t, at: Date.now(), convo: askState.convo }; hist.save([...hist.all(), e]); return { at: e.at, convo: e.convo }; },
+};
+function useConvo(convo) {
+  askState.convo = convo;
+  askState.session = hist.all().filter((t) => t.convo === convo && t.kind === 'ask' && t.session).at(-1)?.session || null;
+  askState.turns = [];
+}
+useConvo(hist.all().at(-1)?.convo || newConvo());
+$('#ask-hist').hidden = EXPORTED || !hist.all().length;
+$('#ask-hist').onclick = showHistory;
+/** The conversation's earlier turns, folded, above an answer. */
+function earlierTurns(a) {
+  const prev = hist.all().filter((t) => t.convo === (a.convo || askState.convo) && t.at < (a.at || Infinity)).slice(-6);
+  return prev.length ? `<div class="earlier">${prev.map((t) => `<details><summary>${h(KIND[t.kind] || '')}: ${h(t.question)}</summary>${t.title ? `<p><strong>${h(t.title)}</strong></p>` : ''}${md(t.answer)}</details>`).join('')}</div>` : '';
+}
+function openTurn(t) {
+  useConvo(t.convo);
+  showAnswer({ ...t, fromHistory: true }, t.question);
+}
+function showHistory() {
+  const all = hist.all();
+  const convos = [];
+  for (const t of all) { const c = convos.find((x) => x[0].convo === t.convo); c ? c.push(t) : convos.push([t]); }
+  convos.sort((a, b) => b.at(-1).at - a.at(-1).at);
+  sheetShell('History', `${convos.map((c) => `<div class="hconvo"><div class="hhead">${h(new Date(c[0].at).toLocaleString())} · ${plural(c.length, 'step')}${c[0].convo === askState.convo ? ' · current conversation' : ''}</div>
+      ${c.map((t) => `<button class="hitem" data-h="${t.at}" title="${hk(t.question)}"><span class="k">${h(KIND[t.kind] || '')}</span>${h(t.question)}</button>`).join('')}
+      ${c[0].convo === askState.convo ? '' : `<button class="btn soft" data-cont="${hk(c[0].convo)}">Continue this conversation</button>`}</div>`).join('') || '<p>Nothing asked yet.</p>'}
+    <div class="sheet-actions"><button class="btn" data-hn>New conversation</button>${all.length ? '<button class="btn soft" data-hc>Clear history</button>' : ''}</div>`);
+  sheet.querySelectorAll('[data-h]').forEach((b) => b.onclick = () => openTurn(all.find((t) => String(t.at) === b.dataset.h)));
+  sheet.querySelectorAll('[data-cont]').forEach((b) => b.onclick = () => { useConvo(b.dataset.cont); toast('Your next question continues this conversation'); showHistory(); askInput.focus(); });
+  sheet.querySelector('[data-hn]').onclick = () => { useConvo(newConvo()); sheet.hidden = true; toast('New conversation'); askInput.focus(); };
+  sheet.querySelector('[data-hc]')?.addEventListener('click', () => { hist.save([]); useConvo(newConvo()); sheet.hidden = true; toast('History cleared'); });
+}
 async function requestChange(question) {
   setBusy(true);
   askState.ctl = new AbortController();
@@ -2197,6 +2257,7 @@ async function requestCodeChange(question) {
   const onMap = edits.filter((e) => Q.exists('f:' + e.path)).map((e) => ({ id: 'f:' + e.path, note: `${verb[e.change] || 'Will change'}: ${e.note || ''}` }));
   const affected = (r.items || []).filter((x) => x && Q.exists(String(x.id)) && !onMap.some((m) => m.id === x.id)).map((x) => ({ id: String(x.id), note: `Affected: ${x.note || ''}` }));
   const p = { title: String(r.title || 'Proposed change'), answer: String(r.answer || ''), items: [...onMap, ...affected].slice(0, 24), steps: [], followups: [], question, edits, session: r.session };
+  hist.add({ kind: 'proposal', question, title: p.title, answer: `${p.answer}${edits.length ? `\n\n**Files to edit:**\n${edits.map((e) => `- \`${e.path}\` · ${verb[e.change] || 'Will change'}: ${e.note || ''}`).join('\n')}` : ''}`, items: p.items });
   askState.last = p;
   const render = () => {
     const list = edits.length ? `<p><strong>Files to edit (${edits.length})</strong></p><ul>${edits.map((e) => `<li><code>${h(e.path)}</code> · ${h(verb[e.change] || 'Will change')}: ${h(e.note || '')}</li>`).join('')}</ul>${affected.length ? `<p><strong>Also affected:</strong> ${affected.length} item(s), shown on the board</p>` : ''}` : '';
@@ -2231,6 +2292,7 @@ function showChangeResult() {
   if (c.undone) { toast('Change undone'); return; }
   if (Date.now() - c.at > 120000) return;
   const items = (G.recent?.items || []).filter((x) => parentOf.has(x.id)).map((x) => ({ id: x.id, note: x.note }));
+  hist.add({ kind: c.code ? 'change' : 'plan', question: c.question, title: c.title || 'Plan updated', answer: String(c.summary || ''), items: items.slice(0, 24) });
   closeSheet(); // a card in the link opens the details sheet on a phone, and it would sit on top of this summary
   sheetShell(c.question, `<p><strong>${h(c.title || 'Plan updated')}</strong></p>${md(c.summary)}
     <div class="sheet-actions">${items.length ? `<button class="btn soft" data-cr="show">${iconI('search')}Show ${plural(items.length, 'change')}</button>` : ''}${c.code ? '' : `<button class="btn soft" data-cr="undo">${iconI('left')}Undo</button>`}</div>${c.code ? '<p style="font-size:12px;color:var(--text-3)">To undo, use git in the repo: the map only shows what changed.</p>' : ''}
