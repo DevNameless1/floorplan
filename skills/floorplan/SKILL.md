@@ -179,7 +179,7 @@ On a code map served with the Claude Code CLI, the Ask bar has an **Ask / Change
 
 ### Council
 
-On a code map with the Claude Code CLI, the Ask bar's **Council** mode sends one request to four read-only experts at once: a programmer, an analyst, a risk manager and a tester. Each reads the code, the map and Jira/Confluence on its own, without seeing the others. A summary with no tools then reads only their four answers and explains in plain words where the request leads, where they agree and disagree, the main risks and a next step. The result opens in tabs, one per expert, and is kept in History as its own conversation. It changes nothing: to act on it, switch to **Change code**. It runs five agents, so it costs about five questions.
+On a code map with the Claude Code CLI, the Ask bar's **Council** mode sends one request to four read-only experts at once: a programmer, an analyst, a risk manager and a tester. Each reads the code, the map and Jira/Confluence on its own, without seeing the others. A summary with no tools then reads only their four answers and explains in plain words where the request leads, where they agree and disagree, the main risks and a next step. The result opens in tabs, one per expert, and is kept in History as its own conversation. It changes nothing by itself: **Plan the change from this council** sends the request and every expert's answer to Change code, which proposes the edits for approval as usual. It runs five agents, so it costs about five questions.
 
 ### What the map's agent may use
 

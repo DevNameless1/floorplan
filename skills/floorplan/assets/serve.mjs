@@ -227,7 +227,8 @@ function load() {
     flow: { instructions: core.floorplanFlowInstructions(G, 'cli'), schema: core.FLOORPLAN_FLOW_SCHEMA, file: path.join(here, '.cache', 'flow-schema.json') },
     // a code map: a change to the code is proposed first (read-only), then made once the person approves it
     ...(!G.meta?.blueprint && engine === 'claude' ? {
-      propose: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}\n\n${PROPOSE_TEXT}`, schema: PROPOSE_SCHEMA },
+      // room for a request planned from a council, which carries the experts' answers
+      propose: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}\n\n${PROPOSE_TEXT}`, schema: PROPOSE_SCHEMA, maxInput: 20000 },
       apply: { instructions: APPLY_TEXT, schema: core.FLOORPLAN_ANSWER_SCHEMA, write: true },
       council: {
         roles: Object.fromEntries(Object.entries(COUNCIL_ROLES).map(([k, [label, focus]]) => [k, { label, instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}\n\n${COUNCIL_COMMON}\n\nYou are the ${label.toLowerCase()}. Focus on: ${focus}`, schema: core.FLOORPLAN_ANSWER_SCHEMA }])),
@@ -995,7 +996,7 @@ const server = http.createServer((req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/api/ask') {
       let raw = '';
-      req.on('data', (d) => { raw += d; if (raw.length > 20000) req.destroy(); });
+      req.on('data', (d) => { raw += d; if (raw.length > 60000) req.destroy(); });
       req.on('end', () => { let body = {}; try { body = JSON.parse(raw); } catch {} ask(req, res, body); });
       return;
     }

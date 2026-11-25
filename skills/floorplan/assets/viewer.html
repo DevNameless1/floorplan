@@ -2299,14 +2299,14 @@ async function requestChange(question) {
   } finally { setBusy(false); }
 }
 // A code change: a read-only proposal on a board (what will be edited, what it affects), then Apply.
-async function requestCodeChange(question) {
+async function requestCodeChange(question, prompt = question) {
   setBusy(true);
   askState.ctl = new AbortController();
   const lines = ['Working out the change…'];
   const progress = (t) => { lines.push(t); showProgress(question, lines.slice(-6)); };
   showProgress(question, lines);
   let r;
-  try { r = await askViaCli(question, progress, 'propose'); }
+  try { r = await askViaCli(prompt, progress, 'propose'); }
   catch (e) { if (e?.name === 'AbortError') showFailure(question, 'cancelled'); else showFailure(question, e?.code || 'upstream_error', e?.message || String(e)); return; }
   finally { setBusy(false); }
   const verb = { new: 'New', changed: 'Will change', deleted: 'Will delete' };
@@ -2409,8 +2409,14 @@ function showCouncil(c, tab = 'summary') {
   askState.last = items.length ? view : null;
   const draw = () => {
     sheetShell(c.question, `<div class="ctabs" role="tablist">${Object.keys(COUNCIL).map((k) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === tab}" class="${k === tab ? 'on' : ''}${part(k).error ? ' bad' : ''}">${COUNCIL[k]}</button>`).join('')}</div>
-      ${a.error ? `<p class="err">${h(a.error)}</p>` : `<p><strong>${h(view.title)}</strong></p>${md(a.answer)}${usedBlock(a.used)}`}`);
+      ${a.error ? `<p class="err">${h(a.error)}</p>` : `<p><strong>${h(view.title)}</strong></p>${md(a.answer)}${usedBlock(a.used)}`}
+      ${canChange() && !PLAN ? `<div class="sheet-actions"><button class="btn" data-act="build" title="Plans a code change from the request and every expert's answer. You see the plan before anything is edited.">${iconI('right')}Plan the change from this council</button></div>` : ''}`);
     sheet.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => showCouncil(c, b.dataset.tab));
+    sheet.querySelector('[data-act="build"]')?.addEventListener('click', () => {
+      setAskMode('change');
+      const said = Object.keys(COUNCIL).filter((k) => part(k).answer).map((k) => `## ${COUNCIL[k]}\n${part(k).answer}`).join('\n\n');
+      requestCodeChange(`From the council: ${c.question}`, `${c.question}\n\nA council of experts already looked at this request. Build on their conclusions: do what they agree on, handle the risks they raised, cover the tests they listed, and say in your answer how you settled their open questions or which ones still need the person.\n\n${said}`);
+    });
   };
   // a tab without cards mustn't leave another tab's cards on the board
   if (items.length) { state.answer = view; go('q:answer', { force: true, after: draw }); } else if (state.container === 'q:answer') go('root', { after: draw }); else draw();

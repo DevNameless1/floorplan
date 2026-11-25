@@ -211,3 +211,10 @@ test('a council needs Claude Code: on Codex it is refused', async () => {
   assert.match(pick(events, 'failure')[0].message, /Claude Code/);
   assert.equal(pick(events, 'answer').length, 0);
 });
+
+test("a change planned from a council carries the experts' answers whole", async () => {
+  const s = await serve({ FLOORPLAN_CLAUDE: path.join(FAKE, 'fake-claude.mjs'), FLOORPLAN_CODEX: path.join(root, 'no-such-cli') });
+  const request = 'Add refunds\n\n' + '## Programmer\n' + 'x'.repeat(9000);
+  await ask(s, request, undefined, 'propose');
+  assert.equal(s.calls()[0].input, request);
+});
