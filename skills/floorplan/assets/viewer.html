@@ -425,9 +425,17 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 .einfo svg { width: 14px; height: 14px; }
 #ask-send { width: 38px; height: 38px; border-radius: 999px; border: 0; background: var(--on); color: var(--on-text); cursor: pointer; display: grid; place-items: center; flex: none; transition: transform .2s var(--ease), background .2s var(--ease), opacity .2s; }
 #ask-send:hover:not(:disabled) { transform: scale(1.06); background: var(--on-hover); }
-#ask-hist { width: 32px; height: 32px; border-radius: 999px; border: 0; background: none; color: var(--text-3); cursor: pointer; display: grid; place-items: center; flex: none; }
-#ask-hist:hover { background: rgba(var(--ink), .07); color: var(--text); }
-#ask-hist[hidden] { display: none; }
+#ask-agent, #ask-hist { width: 32px; height: 32px; border-radius: 999px; border: 0; background: none; color: var(--text-3); cursor: pointer; display: grid; place-items: center; flex: none; }
+#ask-agent:hover, #ask-hist:hover { background: rgba(var(--ink), .07); color: var(--text); }
+#ask-agent[hidden], #ask-hist[hidden] { display: none; }
+#ask-sheet .agent h4 { margin: 12px 0 4px; font-size: 13px; font-weight: 600; display: flex; gap: 8px; align-items: baseline; }
+#ask-sheet .agent h4 span { color: var(--text-3); font-weight: 400; font-size: 12px; }
+#ask-sheet .agent h4 button { margin-left: auto; border: 0; background: none; color: var(--text-3); font-size: 12px; cursor: pointer; }
+#ask-sheet .agent label { display: flex; gap: 8px; align-items: center; padding: 3px 0; font-size: 13.5px; cursor: pointer; }
+#ask-sheet .agent label small { color: var(--text-3); font-size: 12px; }
+#ask-sheet .agent label[hidden] { display: none; }
+#ask-sheet .agent .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); column-gap: 12px; }
+#ask-sheet .agent input[type=search] { width: 100%; margin: 2px 0 4px; padding: 5px 9px; border-radius: 8px; border: 1px solid rgba(var(--ink), .12); background: none; color: var(--text); font: inherit; font-size: 13px; }
 #ask-sheet .earlier { margin: 0 0 12px; padding-bottom: 8px; border-bottom: 1px solid rgba(var(--ink), .08); }
 #ask-sheet .earlier details { margin: 0 0 6px; }
 #ask-sheet .earlier summary { cursor: pointer; color: var(--text-3); font-size: 13px; }
@@ -596,6 +604,7 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
       <span id="ask-chips"></span>
       <input id="ask-input" placeholder="Ask anything about this codebase…" spellcheck="false">
       <span class="engine" id="ask-engine"><i></i>checking…</span>
+      <button id="ask-agent" type="button" title="What the agent may use" aria-label="Agent settings" hidden><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
       <button id="ask-hist" type="button" title="History" aria-label="History" hidden><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
       <button id="ask-send" type="submit" title="Ask" disabled><svg class="i" viewBox="0 0 24 24"><path d="M12 19V5M5 12l7-7 7 7"/></svg></button>
     </form>
@@ -2207,6 +2216,8 @@ function useConvo(convo) {
 useConvo(hist.all().at(-1)?.convo || newConvo());
 $('#ask-hist').hidden = EXPORTED || !hist.all().length;
 $('#ask-hist').onclick = showHistory;
+$('#ask-agent').hidden = EXPORTED || !window.FLOORPLAN_SERVER;
+$('#ask-agent').onclick = showAgentPanel;
 /** The conversation's earlier turns, folded, above an answer. */
 function earlierTurns(a) {
   const prev = hist.all().filter((t) => t.convo === (a.convo || askState.convo) && t.at < (a.at || Infinity)).slice(-6);
@@ -2219,6 +2230,32 @@ function usedBlock(used) {
   const chip = (u) => `<span class="uchip" title="${hk((u.detail || []).join('\n'))}">${h(u.name)}${u.count > 1 ? ` ×${u.count}` : ''}</span>`;
   const row = (label, list) => `<div><span class="ul">${label}</span>${list.length ? list.map(chip).join('') : '<span>none</span>'}</div>`;
   return `<details class="used" open><summary>What the agent used</summary>${row('Skills', of('skill'))}${row('MCP', of('mcp'))}${row('Tools', of('tool'))}</details>`;
+}
+/** The Agent panel: which built-in tools, MCP servers and skills the map's agent may use, saved by the server. */
+async function showAgentPanel() {
+  sheetShell('Agent settings', '<div class="progress"><div><span class="spin"></span>Reading your tools, MCP servers and skills…</div></div>');
+  const api = (m, body) => fetch('/api/agent', { method: m, headers: { 'x-floorplan-token': window.FLOORPLAN_SERVER.token, 'content-type': 'application/json' }, body: body && JSON.stringify(body) }).then((r) => r.json());
+  let d;
+  try { d = await api('GET'); } catch { sheetShell('Agent settings', '<p class="err">Couldn’t reach the map server.</p>'); return; }
+  const en = { tools: new Set(d.enabled.tools), mcp: new Set(d.enabled.mcp), skills: new Set(d.enabled.skills) };
+  const box = (group, name, label, note) => `<label><input type="checkbox" data-g="${group}" value="${hk(name)}" ${en[group].has(name) ? 'checked' : ''}>${h(label)}${note ? ` <small>${h(note)}</small>` : ''}</label>`;
+  sheetShell('Agent settings', `<div class="agent">
+    <p style="color:var(--text-3);font-size:12.5px;margin:0">What the agent may use for questions and code changes on this map. Saved for this project in ~/.claude/floorplan/agent.json, outside the repo. Changing code always adds editing of the files you approve.</p>
+    <h4>Tools <span>${d.enabled.tools.length}/${d.available.tools.length}</span></h4>
+    <div class="grid">${d.available.tools.map((t) => box('tools', t.name, t.name === 'Query' ? 'Map query' : t.name, t.note)).join('')}</div>
+    <h4>MCP <span>${d.enabled.mcp.length}/${d.available.mcp.length} · read tools only</span></h4>
+    ${d.available.mcp.length ? `<div class="grid">${d.available.mcp.map((m) => box('mcp', m.name, m.name, `${m.tools} read tools`)).join('')}</div>` : '<p style="font-size:13px;color:var(--text-3)">None of the supported servers (context7, atlassian) are in your Claude Code config.</p>'}
+    <h4>Skills <span>${d.enabled.skills.length}/${d.available.skills.length}</span>${d.enabled.skills.length ? '<button type="button" data-none>Turn all off</button>' : ''}</h4>
+    ${d.available.skills.length ? `<input type="search" placeholder="Filter skills…" data-filter><div class="grid" data-skills>${d.available.skills.map((n) => box('skills', n, n, '')).join('')}</div>` : `<p style="font-size:13px;color:var(--text-3)">${d.engine === 'claude' ? 'No skills found.' : 'Skills need the Claude Code CLI.'}</p>`}
+  </div>`);
+  const save = async () => {
+    const pick = (g) => [...sheet.querySelectorAll(`input[data-g="${g}"]:checked`)].map((i) => i.value);
+    const r = await api('POST', { tools: pick('tools'), mcp: pick('mcp'), skills: pick('skills') }).catch(() => ({ ok: false }));
+    toast(r.ok ? 'Saved: the next question uses it' : 'Couldn’t save');
+  };
+  sheet.querySelectorAll('input[data-g]').forEach((i) => i.onchange = save);
+  sheet.querySelector('[data-filter]')?.addEventListener('input', (ev) => { const q = ev.target.value.toLowerCase(); sheet.querySelectorAll('[data-skills] label').forEach((l) => { l.hidden = !l.textContent.toLowerCase().includes(q); }); });
+  sheet.querySelector('[data-none]')?.addEventListener('click', () => { sheet.querySelectorAll('input[data-g="skills"]').forEach((i) => { i.checked = false; }); save(); });
 }
 function openTurn(t) {
   useConvo(t.convo);

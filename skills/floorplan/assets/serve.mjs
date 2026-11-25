@@ -369,35 +369,90 @@ const MCP_READ_TOOLS = {
     'confluence_search', 'confluence_get_page', 'confluence_get_page_children', 'confluence_get_space_page_tree', 'confluence_get_comments',
     'confluence_get_inline_comments', 'confluence_get_labels', 'confluence_get_page_history', 'confluence_get_page_diff'],
 };
-const mcpNames = (() => { try { const m = JSON.parse(fs.readFileSync(path.join(here, 'architecture.json'), 'utf8')).mcp; return Array.isArray(m) ? [...new Set(m.filter((n) => Object.hasOwn(MCP_READ_TOOLS, n)))] : []; } catch { return []; } })();
-const mcpFile = (() => {
-  if (!mcpNames.length) return null;
-  let cfg; try { cfg = JSON.parse(fs.readFileSync(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json'), 'utf8')); } catch { return null; }
-  const all = { ...(cfg.mcpServers || {}), ...(cfg.projects?.[root]?.mcpServers || {}) };
-  const servers = Object.fromEntries(mcpNames.filter((n) => all[n]).map((n) => [n, all[n]]));
-  const missing = mcpNames.filter((n) => !all[n]);
-  if (missing.length) console.error(`✗ MCP server(s) not in your Claude Code config: ${missing.join(', ')}`);
+// ---------- what the agent may use, chosen in the map's Agent panel ----------
+// Kept in the person's home, not the project: neither a cloned repo nor the agent can widen it (the agent's
+// edits are limited to approved project files). MCP servers come from MCP_READ_TOOLS only, and only their read tools.
+const AGENT_FILE = path.join(os.homedir(), '.claude', 'floorplan', 'agent.json');
+const BUILTIN = { Read: 'Read files', Grep: 'Search the code', Glob: 'Find files by name', Query: 'Look things up on the map', WebSearch: 'Search the web', WebFetch: 'Open web pages (can send what it read to a site)' };
+const AGENT_DEFAULT = { tools: ['Read', 'Grep', 'Glob', 'Query'], mcp: [], skills: [] };
+const rootKey = (() => { try { return fs.realpathSync.native(root); } catch { return root; } })();
+const names = (a) => (Array.isArray(a) ? [...new Set(a.filter((n) => typeof n === 'string' && /^[\w:.@-]{1,100}$/.test(n)))] : []);
+const readAgentFile = () => { try { return readJson(AGENT_FILE); } catch { return {}; } };
+function userMcp() {
+  try { const c = readJson(path.join(process.env.CLAUDE_CONFIG_DIR || os.homedir(), '.claude.json')); return { ...(c.mcpServers || {}), ...(c.projects?.[root]?.mcpServers || {}), ...(c.projects?.[rootKey]?.mcpServers || {}) }; } catch { return {}; }
+}
+function agentSettings() {
+  const s = readAgentFile()[rootKey];
+  if (!s) return AGENT_DEFAULT;
+  return { tools: names(s.tools).filter((t) => BUILTIN[t]), mcp: names(s.mcp).filter((n) => Object.hasOwn(MCP_READ_TOOLS, n)), skills: names(s.skills) };
+}
+function saveAgentSettings(body) {
+  const avail = agentAvailable();
+  const next = { tools: names(body.tools).filter((t) => BUILTIN[t]), mcp: names(body.mcp).filter((n) => avail.mcp.some((m) => m.name === n)), skills: names(body.skills).filter((n) => avail.skills.includes(n)) };
+  const all = readAgentFile();
+  all[rootKey] = next;
+  fs.mkdirSync(path.dirname(AGENT_FILE), { recursive: true });
+  fs.writeFileSync(AGENT_FILE, JSON.stringify(all, null, 2) + '\n', { mode: 0o600 });
+  return next;
+}
+// The CLI names the skills it can load in its first event, before any model call; read that and stop it.
+let knownSkills = null;
+function discoverSkills() {
+  if (knownSkills || engine !== 'claude') return Promise.resolve(knownSkills || []);
+  return new Promise((resolve) => {
+    const child = spawn(cli.cmd, [...cli.args, '-p', '--output-format', 'stream-json', '--verbose', '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}', '--tools', 'Skill', '--permission-mode', 'dontAsk'],
+      { cwd: root, env: cliEnv(), stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    let buf = '';
+    const done = (list) => { clearTimeout(t); child.kill(); if (list) knownSkills = list; resolve(knownSkills || []); };
+    const t = setTimeout(() => done(null), 45000);
+    child.stdout.on('data', (d) => {
+      buf += d;
+      for (const line of buf.split('\n')) { try { const ev = JSON.parse(line); if (ev.type === 'system' && ev.subtype === 'init') return done(names(ev.skills).sort()); } catch {} }
+    });
+    child.on('error', () => done(null));
+    child.on('close', () => done(null));
+    child.stdin.end('ok');
+  });
+}
+function agentAvailable() {
+  const cfg = userMcp();
+  return {
+    tools: Object.entries(BUILTIN).map(([name, note]) => ({ name, note })),
+    mcp: Object.keys(MCP_READ_TOOLS).filter((n) => cfg[n]).map((n) => ({ name: n, tools: MCP_READ_TOOLS[n].length })),
+    skills: knownSkills || [],
+  };
+}
+// MCP config for one run: the chosen servers' entries hold the person's tokens, so they go to a private temp
+// file (removed on exit), never on the command line
+let mcpDir = null;
+function mcpFileFor(chosen) {
+  const cfg = userMcp();
+  const servers = Object.fromEntries(chosen.filter((n) => cfg[n]).map((n) => [n, cfg[n]]));
   if (!Object.keys(servers).length) return null;
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'floorplan-mcp-'));
-  const file = path.join(dir, 'mcp.json');
+  if (!mcpDir) { mcpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'floorplan-mcp-')); process.on('exit', () => fs.rmSync(mcpDir, { recursive: true, force: true })); }
+  const file = path.join(mcpDir, `mcp-${crypto.randomBytes(4).toString('hex')}.json`);
   fs.writeFileSync(file, JSON.stringify({ mcpServers: servers }), { mode: 0o600 });
-  process.on('exit', () => fs.rmSync(dir, { recursive: true, force: true }));
   return { file, names: Object.keys(servers) };
-})();
-const MCP_TEXT = mcpFile ? `\n\nYou also have these MCP servers: ${mcpFile.names.join(', ')}. Use context7 (if listed) for current documentation of any library, framework or tool the code uses, and atlassian (if listed) to look up Jira issues and Confluence pages the question or the code refers to (issue keys like URB-123). Only read with them: never create, edit or comment on anything.` : '';
+}
+const mcpText = (m) => m ? `\n\nYou also have these MCP servers: ${m.names.join(', ')}. Use context7 (if listed) for current documentation of any library, framework or tool the code uses, and atlassian (if listed) to look up Jira issues and Confluence pages the question or the code refers to (issue keys like URB-123). Only read with them: never create, edit or comment on anything.` : '';
 // Claude Code: `claude -p` with read-only tools, answering in the schema; follow-ups resume its session
 function claudeRun(body, mode) {
+  const st = agentSettings();
+  const mcp = mcpFileFor(st.mcp);
+  const tools = [...st.tools.filter((t) => t !== 'Query'), ...(st.tools.includes('Query') ? ['Bash'] : []), ...(st.skills.length ? ['Skill'] : []), ...(mode.write ? ['Edit', 'Write'] : [])];
+  const allowed = [...(st.tools.includes('Query') ? ['Bash(node floorplan/query.mjs:*)'] : []), ...st.tools.filter((t) => t !== 'Query'),
+    ...st.skills.map((n) => `Skill(${n})`), ...(mcp?.names || []).flatMap((n) => MCP_READ_TOOLS[n].map((t) => `mcp__${n}__${t}`))];
   const args = [...cli.args, '-p', '--output-format', 'stream-json', '--verbose',
-    '--json-schema', JSON.stringify(mode.schema), '--append-system-prompt', mode.instructions + MCP_TEXT,
+    '--json-schema', JSON.stringify(mode.schema), '--append-system-prompt', mode.instructions + mcpText(mcp) + (st.skills.length ? `\n\nYou may use these skills when they fit: ${st.skills.join(', ')}.` : ''),
     // Keep the agent out of the map's own generated files. floorplan/index.html inlines the layout engine and
     // fonts (about 2 MB on one line), and reading it can push a single question past the context limit.
     '--disallowedTools', 'Read(floorplan/index.html)', 'Read(floorplan/serve.mjs)', 'Read(floorplan/page-safety.mjs)', 'Read(floorplan/.cache/**)',
     // Only the MCP servers architecture.json names: all of the person's servers (connectors, plugins) would load
     // every tool's description into each question, enough to make it "Prompt is too long" before it's read.
-    '--strict-mcp-config', '--mcp-config', mcpFile ? mcpFile.file : '{"mcpServers":{}}',
+    '--strict-mcp-config', '--mcp-config', mcp ? mcp.file : '{"mcpServers":{}}',
     // only what's allowed here runs: the person's own default mode (auto, acceptEdits, bypass) must not widen it
     '--permission-mode', 'dontAsk',
-    '--tools', mode.write ? 'Read,Grep,Glob,Bash,Edit,Write' : 'Read,Grep,Glob,Bash', '--allowedTools', 'Bash(node floorplan/query.mjs:*)', 'Read', 'Grep', 'Glob', ...(mcpFile?.names || []).flatMap((n) => MCP_READ_TOOLS[n].map((t) => `mcp__${n}__${t}`))];
+    '--tools', tools.join(','), ...(allowed.length ? ['--allowedTools', ...allowed] : [])];
   // an approved code change: Edit and Write only on the files the person approved (anything else is denied in
   // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
   if (mode.write) {
@@ -846,6 +901,16 @@ const server = http.createServer((req, res) => {
         }
       });
       return;
+    }
+    if (url.pathname === '/api/agent') {
+      const send = (data) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify(data)); };
+      if (req.method === 'GET') { discoverSkills().then(() => send({ engine, available: agentAvailable(), enabled: agentSettings() })); return; }
+      if (req.method === 'POST') {
+        let raw = '';
+        req.on('data', (d) => { raw += d; if (raw.length > 50000) req.destroy(); });
+        req.on('end', () => { let body = {}; try { body = JSON.parse(raw); } catch {} try { send({ ok: true, enabled: saveAgentSettings(body) }); } catch (e) { send({ ok: false, error: String(e.message || e) }); } });
+        return;
+      }
     }
     if (req.method === 'POST' && url.pathname === '/api/ask') {
       let raw = '';

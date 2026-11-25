@@ -177,9 +177,9 @@ People can also use **Flows → Request a new flow** to have the agent trace som
 
 On a code map served with the Claude Code CLI, the Ask bar has an **Ask / Change code** switch. A request in Change code runs read-only first and comes back as a proposal: the files it will edit, and the map items the change affects, on one board. Nothing is edited until the person clicks **Apply changes**; then the same session makes only those edits (no shell beyond the map query, never the floorplan/ folder), when edited `.go` files are in a Go module, the server runs `go build ./...` and `go test` on the edited packages and hands failures back to the agent to fix (up to two rounds, still only in the approved files), and the result says whether they pass; then the map is re-scanned and the edited files are highlighted as recent work. Undo is the person's own git. Mention it in your report when the map has a server.
 
-### MCP servers for the map's agent (on request)
+### What the map's agent may use
 
-The Ask bar's agent runs with no MCP servers. When the user wants it to use some of theirs (for example `context7` for library docs, or `atlassian` for Jira and Confluence), add their names to architecture.json: `"mcp": ["context7", "atlassian"]` (these two are the only ones supported, and only their read tools are allowed), then restart the map's server. The names must match servers in their Claude Code config (`claude mcp list`). The server copies just those entries into a private temp file for each agent run, so tokens never go on a command line, and tells the agent to only read with them. Keep mcp-atlassian's own `READ_ONLY_MODE=true` as a second guard.
+The Ask bar has an **Agent settings** button (sliders icon) on a map with a Claude Code server: switches for the built-in tools (Read, Grep, Glob, map query, WebSearch, WebFetch), the supported MCP servers found in the person's Claude Code config (context7 and atlassian, their read tools only) and the person's skills. The choice is saved per project in `~/.claude/floorplan/agent.json`, outside the repo, so neither a cloned repo nor the agent can widen it. By default the agent gets Read, Grep, Glob and map query, with no MCP servers or skills. Each answer lists what the agent used. Keep mcp-atlassian's own `READ_ONLY_MODE=true` as a second guard.
 
 ### Jira tasks (on request)
 
