@@ -229,6 +229,10 @@ function load() {
     ...(!G.meta?.blueprint && engine === 'claude' ? {
       propose: { instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}\n\n${PROPOSE_TEXT}`, schema: PROPOSE_SCHEMA },
       apply: { instructions: APPLY_TEXT, schema: core.FLOORPLAN_ANSWER_SCHEMA, write: true },
+      council: {
+        roles: Object.fromEntries(Object.entries(COUNCIL_ROLES).map(([k, [label, focus]]) => [k, { label, instructions: `${core.floorplanAskInstructions(G, 'cli')}\n\n${context}\n\n${COUNCIL_COMMON}\n\nYou are the ${label.toLowerCase()}. Focus on: ${focus}`, schema: core.FLOORPLAN_ANSWER_SCHEMA }])),
+        summary: { instructions: COUNCIL_SUMMARY, schema: core.FLOORPLAN_ANSWER_SCHEMA, noTools: true, maxInput: 40000 },
+      },
     } : {}),
     ...(G.meta?.blueprint && canChange ? { change: { instructions: core.floorplanChangeInstructions(G), schema: core.FLOORPLAN_CHANGE_SCHEMA, file: path.join(here, '.cache', 'change-schema.json') } } : {}),
   };
@@ -253,6 +257,21 @@ const PROPOSE_SCHEMA = {
   },
   required: ['title', 'answer', 'edits', 'items'],
 };
+// A council: four read-only experts answer the same request side by side, then a summary that has no tools reads
+// only their answers. The experts never see each other, so their views stay independent.
+const COUNCIL_COMMON = `You are one of four experts on a council looking at a request before anything is built: a programmer, an analyst, a risk manager and a tester answer it separately, so stay on your own angle and leave the others' to them. Change nothing: you can only read. Ground claims in the code, the map or Jira/Confluence, cite cards as [[id]], and label guesses as guesses. Answer in the language of the request, in Markdown, at most ~350 words, with items for the cards that matter to your angle.`;
+const COUNCIL_ROLES = {
+  programmer: ['Programmer', 'Which services, files and endpoints the request touches; what already exists and what is missing; how you would build it, in steps; a rough size of the work.'],
+  analyst: ['Analyst', 'Why it matters to the people who use the product and to the business; the user scenarios and edge cases; related Jira issues and Confluence pages (search them); what is unclear or missing in the requirements and who should answer it.'],
+  risks: ['Risk manager', 'Security and access; personal data such as ПИНФЛ; money held in escrow; what could break in other services that depend on the parts it touches; legal or compliance concerns; what must be checked before release. Rank the risks, most serious first.'],
+  tester: ['Tester', 'Which tests already exist in the affected services (find them); what to cover: positive, negative and edge cases, as a checklist; how to verify it by hand; what test data or environments it needs.'],
+};
+const COUNCIL_SUMMARY = `You get a request and the answers of the experts on a council (programmer, analyst, risk manager, tester). You have no tools: work only from their answers. Write for the person who asked, in plain words and in the language of the request (Markdown, at most ~400 words):
+- What would happen if this were built, and where it leads: for the people who use the product, for the team, for the system.
+- Where the experts agree, and where they disagree or contradict each other.
+- The main risks and the open questions, most important first.
+- A suggested next step.
+If an expert's answer is missing, say so and what that leaves unknown. title: 2-6 words. items: only ids the experts cited, each with why it matters, at most 8.`;
 const APPLY_TEXT = `The person approved your proposal. Make exactly the edits it lists and nothing else. If doing it needs a file the proposal didn't list, don't edit that file: finish what you can and say what is left in your answer. Don't run builds or tests yourself: for Go code the map server runs go build and go test after you and sends you any failure to fix. Don't touch the floorplan/ folder. Then reply with title (what was done, 2-6 words), answer (Markdown, at most ~150 words: what you changed and anything left to do) and items (map ids of the files you edited, f:<path>, each with what changed).`;
 
 /** OpenAI structured outputs want every property required and nothing extra; optional lists just come back empty. */
@@ -455,8 +474,8 @@ function mcpFileFor(chosen) {
 const mcpText = (m) => m ? `\n\nYou also have these MCP servers: ${m.names.join(', ')}. Use context7 (if listed) for current documentation of any library, framework or tool the code uses, and atlassian (if listed) to look up Jira issues and Confluence pages the question or the code refers to (issue keys like URB-123). Only read with them: never create, edit or comment on anything.` : '';
 // Claude Code: `claude -p` with read-only tools, answering in the schema; follow-ups resume its session
 function claudeRun(body, mode) {
-  const st = agentSettings();
-  const mcp = mcpFileFor(st.mcp);
+  const st = mode.noTools ? { tools: [], skills: [], mcp: [] } : agentSettings();
+  const mcp = mode.noTools ? null : mcpFileFor(st.mcp);
   const tools = [...st.tools.filter((t) => t !== 'Query'), ...(st.tools.includes('Query') ? ['Bash'] : []), ...(st.skills.length ? ['Skill'] : []), ...(mode.write ? ['Edit', 'Write'] : [])];
   const allowed = [...(st.tools.includes('Query') ? ['Bash(node floorplan/query.mjs:*)'] : []), ...st.tools.filter((t) => t !== 'Query'),
     ...st.skills.map((n) => `Skill(${n})`), ...(mcp?.names || []).flatMap((n) => MCP_READ_TOOLS[n].map((t) => `mcp__${n}__${t}`))];
@@ -482,7 +501,7 @@ function claudeRun(body, mode) {
   if (body.session) args.push('--resume', String(body.session));
   if (model) args.push('--model', model);
   return {
-    args, input: String(body.question || '').slice(0, 4000),
+    args, input: String(body.question || '').slice(0, mode.maxInput || 4000),
     onEvent(ev, out) {
       if (ev.type === 'assistant') for (const c of ev.message?.content || []) if (c.type === 'tool_use') { out.used(c.name, c.input); out.progress(describeTool(c.name, c.input)); }
       if (ev.type !== 'result') return;
@@ -553,9 +572,9 @@ function editable(p) {
 }
 const CLOSED = Symbol('closed'); // the browser went away mid-request
 /** Runs the agent once for a request and resolves with its answer, streaming progress through `send`. */
-function runAgent(res, send, body) {
+function runAgent(res, send, body, mode = MODES[body.mode] || MODES.ask) {
   return new Promise((resolve, reject) => {
-    const run = ENGINES[engine].run(body, MODES[body.mode] || MODES.ask);
+    const run = ENGINES[engine].run(body, mode);
     const child = spawn(cli.cmd, run.args, { cwd: root, env: cliEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const id = crypto.randomBytes(6).toString('hex');
     running.set(id, child);
@@ -613,6 +632,7 @@ function ask(req, res, body) {
   if (!cli) { send('failure', { code: 'cli_missing', message: `${ENGINES[want].name} not found.` }); return res.end(); }
   if (body.mode === 'change') return changePlan(res, send, body);
   if (body.mode === 'apply') return applyCode(res, send, body);
+  if (body.mode === 'council') return council(res, send, body);
   runAgent(res, send, body)
     .then((a) => {
       if (body.mode === 'propose' && a.session) {
@@ -624,6 +644,29 @@ function ask(req, res, body) {
       send('answer', a);
     }, (e) => { if (e !== CLOSED) send('failure', { code: failCode(e.message), message: e.message }); })
     .finally(() => res.end());
+}
+
+/**
+ * Runs the four council roles at once, then the summary. Every event names its role; the last `answer` carries
+ * all of them. A failed role or summary is reported in its place, so the rest still arrives.
+ */
+async function council(res, send, body) {
+  const c = MODES.council;
+  if (!c) { send('failure', { code: 'cli_error', message: 'A council needs the Claude Code CLI and a map of code.' }); return res.end(); }
+  const question = String(body.question || '').slice(0, 4000);
+  const tagged = (role) => (event, data) => send(event, { ...data, role });
+  const roles = {};
+  const settled = await Promise.allSettled(Object.entries(c.roles).map(([k, mode]) =>
+    runAgent(res, tagged(k), { question }, mode).then((a) => { roles[k] = a; tagged(k)('answer', a); },
+      (e) => { if (e === CLOSED) throw e; roles[k] = { error: e.message }; tagged(k)('failure', { code: failCode(e.message), message: e.message }); })));
+  if (settled.some((r) => r.reason === CLOSED)) return res.end();
+  if (Object.values(roles).every((r) => r.error)) { send('failure', { code: failCode(roles.programmer.error), message: roles.programmer.error }); return res.end(); }
+  const input = `The request:\n${question}\n\n` + Object.entries(c.roles).map(([k, m]) => `## ${m.label}\n${roles[k].error ? `(no answer: ${roles[k].error})` : `${roles[k].answer}\nCards: ${(roles[k].items || []).map((i) => i.id).join(', ') || 'none'}`}`).join('\n\n');
+  let summary;
+  try { summary = await runAgent(res, tagged('summary'), { question: input }, c.summary); }
+  catch (e) { if (e === CLOSED) return res.end(); summary = { error: e.message }; }
+  send('answer', { council: true, question, summary, roles: Object.fromEntries(Object.keys(c.roles).map((k) => [k, roles[k]])) });
+  res.end();
 }
 
 // ---------- changing a blueprint from the map ----------

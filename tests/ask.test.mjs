@@ -32,8 +32,8 @@ async function serve(env) {
 }
 
 /** Asks one question and returns its server-sent events as [{ event, data }]. */
-async function ask(s, question, session) {
-  const r = await fetch(s.base + '/api/ask', { method: 'POST', headers: { 'content-type': 'application/json', 'x-floorplan-token': s.token }, body: JSON.stringify({ question, session }) });
+async function ask(s, question, session, mode) {
+  const r = await fetch(s.base + '/api/ask', { method: 'POST', headers: { 'content-type': 'application/json', 'x-floorplan-token': s.token }, body: JSON.stringify({ question, session, mode }) });
   return (await r.text()).split('\n\n').filter(Boolean).map((b) => ({ event: /^event: (\w+)/.exec(b)[1], data: JSON.parse(/^data: (.*)$/m.exec(b)[1]) }));
 }
 const pick = (events, name) => events.filter((e) => e.event === name).map((e) => e.data);
@@ -160,4 +160,54 @@ test('on Windows, a Claude Code npm install with only bin/claude.exe is found an
   const s = await serve({ FLOORPLAN_CLAUDE: path.join(npm, 'claude'), FLOORPLAN_CODEX: path.join(root, 'no-such-cli') });
   assert.equal(s.page.engine, 'claude');
   assert.equal(s.page.version, process.version);
+});
+
+test('a council runs four read-only experts at once, then a summary with no tools that reads only their answers', async () => {
+  const s = await serve({ FLOORPLAN_CLAUDE: path.join(FAKE, 'fake-claude.mjs'), FLOORPLAN_CODEX: path.join(root, 'no-such-cli') });
+  const events = await ask(s, 'Add refunds by card', undefined, 'council');
+  const final = pick(events, 'answer').find((a) => a.council);
+  assert.deepEqual(Object.keys(final.roles), ['programmer', 'analyst', 'risks', 'tester']);
+  assert.equal(final.roles.risks.title, 'risk manager');
+  assert.equal(final.summary.title, 'Summary');
+  // each expert's answer is sent as soon as it's ready, tagged with its role
+  assert.deepEqual(pick(events, 'answer').filter((a) => a.role).map((a) => a.role).sort(), ['analyst', 'programmer', 'risks', 'tester']);
+  const calls = s.calls();
+  assert.equal(calls.length, 5);
+  const summary = calls.find((c) => c.args[c.args.indexOf('--tools') + 1] === '');
+  assert.ok(!summary.args.includes('--allowedTools'), 'the summary may use nothing');
+  assert.equal(summary.args[summary.args.indexOf('--mcp-config') + 1], '{"mcpServers":{}}');
+  assert.match(summary.input, /## Programmer\nThe programmer view/);
+  assert.match(summary.input, /## Tester\nThe tester view/);
+  for (const c of calls.filter((c) => c !== summary)) {
+    assert.equal(c.input, 'Add refunds by card');
+    assert.ok(!c.args[c.args.indexOf('--tools') + 1].includes('Edit'), 'experts only read');
+    assert.doesNotMatch(c.args[c.args.indexOf('--append-system-prompt') + 1], /view of/, "experts don't see each other's answers");
+  }
+});
+
+test('a council keeps going when an expert or the summary fails, and fails only when every expert does', async () => {
+  const one = await serve({ FAKE_FAIL: 'You are the tester', FLOORPLAN_CLAUDE: path.join(FAKE, 'fake-claude.mjs'), FLOORPLAN_CODEX: path.join(root, 'no-such-cli') });
+  let final = pick(await ask(one, 'Add refunds', undefined, 'council'), 'answer').find((a) => a.council);
+  assert.equal(final.roles.tester.error, 'Something went wrong');
+  assert.equal(final.roles.programmer.title, 'programmer');
+  assert.equal(final.summary.title, 'Summary');
+  assert.match(one.calls().at(-1).input, /## Tester\n\(no answer: Something went wrong\)/);
+
+  const summary = await serve({ FAKE_FAIL: 'You have no tools', FLOORPLAN_CLAUDE: path.join(FAKE, 'fake-claude.mjs'), FLOORPLAN_CODEX: path.join(root, 'no-such-cli') });
+  final = pick(await ask(summary, 'Add refunds', undefined, 'council'), 'answer').find((a) => a.council);
+  assert.equal(final.summary.error, 'Something went wrong');
+  assert.equal(Object.values(final.roles).filter((r) => r.title).length, 4);
+
+  const all = await serve({ FAKE_FAIL: 'Focus on', FLOORPLAN_CLAUDE: path.join(FAKE, 'fake-claude.mjs'), FLOORPLAN_CODEX: path.join(root, 'no-such-cli') });
+  const events = await ask(all, 'Add refunds', undefined, 'council');
+  assert.equal(pick(events, 'answer').length, 0);
+  assert.ok(pick(events, 'failure').some((f) => !f.role), 'one failure for the whole council');
+  assert.equal(all.calls().length, 4, 'no summary of nothing');
+});
+
+test('a council needs Claude Code: on Codex it is refused', async () => {
+  const s = await serve({ FLOORPLAN_CLAUDE: path.join(root, 'no-such-cli'), FLOORPLAN_CODEX: path.join(FAKE, 'fake-codex.mjs') });
+  const events = await ask(s, 'Add refunds', undefined, 'council');
+  assert.match(pick(events, 'failure')[0].message, /Claude Code/);
+  assert.equal(pick(events, 'answer').length, 0);
 });

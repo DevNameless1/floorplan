@@ -30,6 +30,21 @@ process.stdin.on('end', () => {
     out({ type: 'result', subtype: 'success', is_error: false, session_id: 'test-session', structured_output: replies[Math.min(n, replies.length - 1)] });
     return;
   }
+  // a council: a run whose system prompt matches $FAKE_FAIL fails; each role answers under its own title, and
+  // the summary (started with no tools) answers as "Summary"
+  const system = args[args.indexOf('--append-system-prompt') + 1] || '';
+  if (process.env.FAKE_FAIL && new RegExp(process.env.FAKE_FAIL).test(system)) {
+    out({ type: 'result', subtype: 'success', is_error: true, session_id: 'test-session', result: 'Something went wrong' });
+    return;
+  }
+  const role = /You are the ([\w ]+)\. Focus on/.exec(system)?.[1];
+  if (role || args[args.indexOf('--tools') + 1] === '') {
+    out({ type: 'result', subtype: 'success', is_error: false, session_id: 'test-session', structured_output: {
+      title: role || 'Summary', answer: role ? `The ${role} view of [[f:shop-api/routes/orders.js]].` : 'All four agree.',
+      items: [{ id: 'f:shop-api/routes/orders.js', note: 'Touched.' }],
+    } });
+    return;
+  }
   out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'node floorplan/query.mjs overview' } }] } });
   out({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: 'shop-api/routes/orders.js' } }] } });
   out({ type: 'result', subtype: 'success', is_error: false, session_id: 'test-session', structured_output: {
