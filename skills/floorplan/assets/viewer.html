@@ -446,6 +446,11 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 #ask-sheet .used .ul { width: 52px; flex: none; }
 #ask-sheet .used .uchip { background: rgba(var(--ink), .07); color: var(--text-2, var(--text)); border-radius: 6px; padding: 1px 7px; font-family: var(--mono); font-size: 11.5px; }
 #ask-sheet .hconvo { margin: 0 0 14px; }
+#ask-sheet .ctabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 0 0 12px; }
+#ask-sheet .ctabs button { border: 1px solid rgba(var(--ink), .12); background: none; color: var(--text-3); font: inherit; font-size: 12.5px; height: 28px; padding: 0 12px; border-radius: 999px; cursor: pointer; }
+#ask-sheet .ctabs button.on { background: var(--surface); color: var(--text); border-color: transparent; box-shadow: 0 1px 2px rgba(0, 0, 0, .18); }
+#ask-sheet .ctabs button.bad { text-decoration: line-through; }
+.progress.council b { display: inline-block; min-width: 96px; color: var(--text); font-weight: 500; }
 #ask-sheet .hhead { color: var(--text-3); font-size: 12px; margin: 0 0 4px; }
 #ask-sheet .hitem { display: block; width: 100%; text-align: left; border: 0; background: none; color: var(--text); font: inherit; font-size: 13.5px; padding: 5px 8px; border-radius: 8px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #ask-sheet .hitem:hover { background: rgba(var(--ink), .06); }
@@ -2143,8 +2148,8 @@ function renderAnswer(a) {
     ${usedBlock(a.used)}
     ${a.followups?.length ? `<div class="followups">${a.followups.slice(0, 3).map((f) => `<button data-follow="${hk(f)}">${h(f)}</button>`).join('')}</div>` : ''}`);
 }
+const clean = (arr) => (Array.isArray(arr) ? arr : []).map((x) => typeof x === 'string' ? { id: x, note: '' } : x).filter((x) => x && Q.exists(String(x.id))).map((x) => ({ id: String(x.id), note: String(x.note || '') }));
 function showAnswer(raw, question) {
-  const clean = (arr) => (Array.isArray(arr) ? arr : []).map((x) => typeof x === 'string' ? { id: x, note: '' } : x).filter((x) => x && Q.exists(String(x.id))).map((x) => ({ id: String(x.id), note: String(x.note || '') }));
   const items = clean(raw.items);
   const steps = clean(raw.steps);
   for (const s of steps) if (!items.some((x) => x.id === s.id)) items.push({ id: s.id, note: s.note });
@@ -2182,17 +2187,17 @@ const CHANGE_KEY = 'floorplan-change';
 // a server whose engine can't be held to the plan's format says change: false
 const canChange = () => askState.engine === 'cli' && (PLAN ? window.FLOORPLAN_SERVER?.change !== false : !!window.FLOORPLAN_SERVER?.code);
 function setAskMode(m) {
-  askState.mode = canChange() && m === 'change' ? 'change' : 'ask';
+  askState.mode = canChange() && (m === 'change' || (m === 'council' && !PLAN)) ? m : 'ask';
   $('#ask-mode')?.querySelectorAll('button').forEach((b) => { b.classList.toggle('on', b.dataset.m === askState.mode); b.setAttribute('aria-pressed', String(b.dataset.m === askState.mode)); });
-  if (askState.engine) askInput.placeholder = askState.mode === 'change' ? (PLAN ? 'Ask for a change, e.g. “also plan out refunds”…' : 'Describe a code change: you see the plan before anything is edited…') : `Ask anything about ${G.project.name}…`;
-  askSend.title = askState.busy ? 'Stop' : askState.mode === 'change' ? (PLAN ? 'Make this change' : 'Plan this change') : 'Ask';
+  if (askState.engine) askInput.placeholder = askState.mode === 'council' ? COUNCIL_HINT : askState.mode === 'change' ? (PLAN ? 'Ask for a change, e.g. “also plan out refunds”…' : 'Describe a code change: you see the plan before anything is edited…') : `Ask anything about ${G.project.name}…`;
+  askSend.title = askState.busy ? 'Stop' : askState.mode === 'council' ? 'Ask the council' : askState.mode === 'change' ? (PLAN ? 'Make this change' : 'Plan this change') : 'Ask';
 }
 function addModeSwitch() {
   if (!canChange() || $('#ask-mode')) return;
   const sw = document.createElement('span');
   sw.id = 'ask-mode';
   sw.innerHTML = PLAN ? '<button type="button" data-m="ask" title="Ask a question about the plan">Ask</button><button type="button" data-m="change" title="Ask for a change, addition or removal, and the map is redrawn">Change</button>'
-    : '<button type="button" data-m="ask" title="Ask a question about the code">Ask</button><button type="button" data-m="change" title="Ask for a code change: you see what will change and what it affects, and nothing is edited until you approve">Change code</button>';
+    : '<button type="button" data-m="ask" title="Ask a question about the code">Ask</button><button type="button" data-m="change" title="Ask for a code change: you see what will change and what it affects, and nothing is edited until you approve">Change code</button><button type="button" data-m="council" title="A programmer, an analyst, a risk manager and a tester look at it side by side, then a summary explains where it leads. Runs 5 agents; changes nothing.">Council</button>';
   sw.querySelectorAll('button').forEach((b) => b.onclick = () => { setAskMode(b.dataset.m); askInput.focus(); });
   $('#ask-form').prepend(sw);
   setAskMode('ask');
@@ -2201,7 +2206,7 @@ const stash = { get: () => { try { return JSON.parse(sessionStorage.getItem(CHAN
 // ---------- history: every question, proposal and change on this map, kept in this browser ----------
 // Follow-ups go on in the current conversation (the agent's session is resumed), even after a reload.
 const HIST_KEY = 'floorplan:history:' + G.project.name;
-const KIND = { ask: 'Asked', proposal: 'Proposed', change: 'Changed code', plan: 'Changed plan', error: 'Failed' };
+const KIND = { ask: 'Asked', proposal: 'Proposed', change: 'Changed code', plan: 'Changed plan', council: 'Council', error: 'Failed' };
 const newConvo = () => Math.random().toString(36).slice(2, 10);
 const hist = {
   all() { try { const a = JSON.parse(localStorage.getItem(HIST_KEY) || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } },
@@ -2258,6 +2263,7 @@ async function showAgentPanel() {
   sheet.querySelector('[data-none]')?.addEventListener('click', () => { sheet.querySelectorAll('input[data-g="skills"]').forEach((i) => { i.checked = false; }); save(); });
 }
 function openTurn(t) {
+  if (t.kind === 'council') return showCouncil({ ...t, fromHistory: true });
   useConvo(t.convo);
   showAnswer({ ...t, fromHistory: true }, t.question);
 }
@@ -2268,7 +2274,7 @@ function showHistory() {
   convos.sort((a, b) => b.at(-1).at - a.at(-1).at);
   sheetShell('History', `${convos.map((c) => `<div class="hconvo"><div class="hhead">${h(new Date(c[0].at).toLocaleString())} · ${plural(c.length, 'step')}${c[0].convo === askState.convo ? ' · current conversation' : ''}</div>
       ${c.map((t) => `<button class="hitem" data-h="${t.at}" title="${hk(t.question)}"><span class="k">${h(KIND[t.kind] || '')}</span>${h(t.question)}</button>`).join('')}
-      ${c[0].convo === askState.convo ? '' : `<button class="btn soft" data-cont="${hk(c[0].convo)}">Continue this conversation</button>`}</div>`).join('') || '<p>Nothing asked yet.</p>'}
+      ${c[0].convo === askState.convo || c.some((t) => t.kind === 'council') ? '' : `<button class="btn soft" data-cont="${hk(c[0].convo)}">Continue this conversation</button>`}</div>`).join('') || '<p>Nothing asked yet.</p>'}
     <div class="sheet-actions"><button class="btn" data-hn>New conversation</button>${all.length ? '<button class="btn soft" data-hc>Clear history</button>' : ''}</div>`);
   sheet.querySelectorAll('[data-h]').forEach((b) => b.onclick = () => openTurn(all.find((t) => String(t.at) === b.dataset.h)));
   sheet.querySelectorAll('[data-cont]').forEach((b) => b.onclick = () => { useConvo(b.dataset.cont); toast('Your next question continues this conversation'); showHistory(); askInput.focus(); });
@@ -2359,7 +2365,57 @@ function showChangeResult() {
   sheet.querySelectorAll('[data-cf]').forEach((b) => b.onclick = () => { setAskMode('change'); askInput.value = b.dataset.cf; submitAsk(); });
 }
 
-async function askViaCli(question, progress, mode = 'ask', session) {
+// ---------- council: four experts side by side, then a summary (served by serve.mjs) ----------
+const COUNCIL = { summary: 'Summary', programmer: 'Programmer', analyst: 'Analyst', risks: 'Risks', tester: 'Tester' };
+const EXPERTS = ['programmer', 'analyst', 'risks', 'tester'];
+const COUNCIL_HINT = 'Describe a feature: four experts weigh in, then a summary…';
+async function requestCouncil(question) {
+  setBusy(true);
+  askState.ctl = new AbortController();
+  const line = Object.fromEntries(EXPERTS.map((k) => [k, 'Starting…'])), got = {};
+  const draw = () => sheetShell(question, `<div class="progress council">${Object.entries(line).map(([k, t]) => `<div>${got[k] ? '<span style="width:12px;display:inline-block;text-align:center">✓</span>' : '<span class="spin"></span>'}<b>${COUNCIL[k]}</b>${h(t)}</div>`).join('')}</div>`);
+  draw();
+  try {
+    const c = await askViaCli(question, () => {}, 'council', undefined, (ev, d) => {
+      if (ev === 'start' && d.role === 'summary') line.summary = 'Reading the four answers…';
+      if (ev === 'progress') line[d.role] = d.text;
+      if (ev === 'answer') { got[d.role] = d; line[d.role] = 'Done'; }
+      if (ev === 'failure') { got[d.role] = { error: d.message }; line[d.role] = 'Didn’t finish'; }
+      draw();
+    });
+    showCouncil(c);
+  } catch (e) {
+    const done = EXPERTS.filter((k) => got[k] && !got[k].error);
+    // Stop after some experts finished keeps what they said
+    if (e?.name === 'AbortError' && done.length) showCouncil({ council: true, question, summary: { error: 'Stopped before the summary.' }, roles: Object.fromEntries(EXPERTS.map((k) => [k, got[k] || { error: 'Stopped.' }])) });
+    else if (e?.name === 'AbortError') showFailure(question, 'cancelled');
+    else showFailure(question, e?.code || 'upstream_error', e?.message || String(e));
+  } finally { setBusy(false); }
+}
+/** A council's result: tabs for the summary and each expert, each with its cards on the board. */
+function showCouncil(c, tab = 'summary') {
+  if (!c.fromHistory && !c.at) {
+    // its own conversation, so the current Ask conversation carries on untouched
+    const convo = askState.convo, session = askState.session;
+    askState.convo = newConvo();
+    Object.assign(c, hist.add({ kind: 'council', question: c.question, title: c.summary?.title || 'Council', answer: c.summary?.answer || c.summary?.error || '', summary: c.summary, roles: c.roles }));
+    askState.convo = convo; askState.session = session;
+  }
+  const part = (k) => (k === 'summary' ? c.summary : c.roles?.[k]) || { error: 'No answer.' };
+  const a = part(tab);
+  const items = [];
+  for (const x of clean(tab === 'summary' ? [...(a.items || []), ...EXPERTS.flatMap((k) => part(k).items || [])] : a.items)) if (!items.some((y) => y.id === x.id)) items.push(x);
+  const view = { title: a.title || COUNCIL[tab], answer: a.answer || '', items: items.slice(0, 18), steps: [], question: c.question, kind: `Council · ${COUNCIL[tab]}`, at: c.at, convo: c.convo };
+  askState.last = view;
+  const draw = () => {
+    sheetShell(c.question, `<div class="ctabs" role="tablist">${Object.keys(COUNCIL).map((k) => `<button type="button" role="tab" data-tab="${k}" aria-selected="${k === tab}" class="${k === tab ? 'on' : ''}${part(k).error ? ' bad' : ''}">${COUNCIL[k]}</button>`).join('')}</div>
+      ${a.error ? `<p class="err">${h(a.error)}</p>` : `<p><strong>${h(view.title)}</strong></p>${md(a.answer)}${usedBlock(a.used)}`}`);
+    sheet.querySelectorAll('[data-tab]').forEach((b) => b.onclick = () => showCouncil(c, b.dataset.tab));
+  };
+  if (items.length) { state.answer = view; go('q:answer', { force: true, after: draw }); } else draw();
+}
+
+async function askViaCli(question, progress, mode = 'ask', session, onRole) {
   const res = await fetch('/api/ask', {
     method: 'POST', signal: askState.ctl.signal,
     headers: { 'content-type': 'application/json', 'x-floorplan-token': window.FLOORPLAN_SERVER.token },
@@ -2376,6 +2432,7 @@ async function askViaCli(question, progress, mode = 'ask', session) {
     while ((i = buf.indexOf('\n\n')) >= 0) {
       const block = buf.slice(0, i); buf = buf.slice(i + 2);
       const ev = /^event: (.*)$/m.exec(block)?.[1], data = JSON.parse(/^data: (.*)$/m.exec(block)?.[1] || 'null');
+      if (data?.role) { onRole?.(ev, data); continue; }
       if (ev === 'progress') progress(data.text);
       else if (ev === 'answer') { answer = data; if (mode === 'ask') askState.session = data.session || askState.session; }
       else if (ev === 'failure') throw data;
@@ -2419,7 +2476,7 @@ function renderChips() {
   const box = $('#ask-chips');
   box.innerHTML = askState.context.map((id) => { const i = info(id); return `<span class="chip" title="${h(i.path || '')}"><span class="ico" style="--c:${colorOf(i)}">${icon(iconKey(i))}</span><span>${h(i.name)}</span><button type="button" data-rm="${hk(id)}" aria-label="Remove">${iconI('x')}</button></span>`; }).join('');
   box.querySelectorAll('[data-rm]').forEach((b) => b.onclick = () => { askState.context = askState.context.filter((x) => x !== b.dataset.rm); renderChips(); askInput.focus(); });
-  askInput.placeholder = !askState.engine ? 'Asking is unavailable' : askState.mode === 'change' ? (askState.context.length ? 'What should change here?' : PLAN ? 'Ask for a change, e.g. “also plan out refunds”…' : 'Describe a code change: you see the plan before anything is edited…') : askState.context.length ? 'Ask about this…' : `Ask anything about ${G.project.name}…`;
+  askInput.placeholder = !askState.engine ? 'Asking is unavailable' : askState.mode === 'council' ? COUNCIL_HINT : askState.mode === 'change' ? (askState.context.length ? 'What should change here?' : PLAN ? 'Ask for a change, e.g. “also plan out refunds”…' : 'Describe a code change: you see the plan before anything is edited…') : askState.context.length ? 'Ask about this…' : `Ask anything about ${G.project.name}…`;
   askSend.disabled = !askState.engine;
 }
 askInput.addEventListener('keydown', (ev) => { if (ev.key === 'Backspace' && !askInput.value && askState.context.length) { askState.context.pop(); renderChips(); } });
@@ -2432,6 +2489,7 @@ async function submitAsk() {
   if (!question || !askState.engine) return;
   askInput.value = '';
   askState.context = []; renderChips();
+  if (askState.mode === 'council') return requestCouncil(ctxIds.length ? `${question}\n\nThis is about: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.` : question);
   if (askState.mode === 'change' && !PLAN) return requestCodeChange(ctxIds.length ? `${question}\n\nThis is about: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.` : question);
   if (askState.mode === 'change') return requestChange(ctxIds.length ? `${question}\n\nThis is about: ${ctxIds.map((id) => `${id} (${info(id).name})`).join(', ')}.` : question);
   const shown = question;
