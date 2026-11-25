@@ -263,7 +263,7 @@ const COUNCIL_COMMON = `You are one of four experts on a council looking at a re
 const COUNCIL_ROLES = {
   programmer: ['Programmer', 'Which services, files and endpoints the request touches; what already exists and what is missing; how you would build it, in steps; a rough size of the work.'],
   analyst: ['Analyst', 'Why it matters to the people who use the product and to the business; the user scenarios and edge cases; related Jira issues and Confluence pages (search them); what is unclear or missing in the requirements and who should answer it.'],
-  risks: ['Risk manager', 'Security and access; personal data such as ПИНФЛ; money held in escrow; what could break in other services that depend on the parts it touches; legal or compliance concerns; what must be checked before release. Rank the risks, most serious first.'],
+  risks: ['Risk manager', 'Security and access; what could break in other services that depend on the parts it touches; legal or compliance concerns; what must be checked before release. Rank the risks, most serious first.'],
   tester: ['Tester', 'Which tests already exist in the affected services (find them); what to cover: positive, negative and edge cases, as a checklist; how to verify it by hand; what test data or environments it needs.'],
 };
 const COUNCIL_SUMMARY = `You get a request and the answers of the experts on a council (programmer, analyst, risk manager, tester). You have no tools: work only from their answers. Write for the person who asked, in plain words and in the language of the request (Markdown, at most ~400 words):

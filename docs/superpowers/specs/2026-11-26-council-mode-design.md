@@ -60,7 +60,7 @@ CLI), then its own text, and answers with the Ask answer schema (text + board ca
   rough size of the work.
 - **Analyst**: why it matters to users and the business; scenarios and edge cases; related Jira issues
   (URB/ESCROW); what's unclear in the requirements.
-- **Risk manager**: security, personal data (ПИНФЛ), money held in escrow, what could break in other services, what
+- **Risk manager**: security, what could break in other services, what
   must be checked before release.
 - **Tester**: which tests already exist in the affected services; what to cover (positive, negative, edge cases);
   how to verify it by hand or with the Podman checks.
