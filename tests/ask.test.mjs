@@ -32,8 +32,8 @@ async function serve(env) {
 }
 
 /** Asks one question and returns its server-sent events as [{ event, data }]. */
-async function ask(s, question, session, mode) {
-  const r = await fetch(s.base + '/api/ask', { method: 'POST', headers: { 'content-type': 'application/json', 'x-floorplan-token': s.token }, body: JSON.stringify({ question, session, mode }) });
+async function ask(s, question, session, mode, extra = {}) {
+  const r = await fetch(s.base + '/api/ask', { method: 'POST', headers: { 'content-type': 'application/json', 'x-floorplan-token': s.token }, body: JSON.stringify({ question, session, mode, ...extra }) });
   return (await r.text()).split('\n\n').filter(Boolean).map((b) => ({ event: /^event: (\w+)/.exec(b)[1], data: JSON.parse(/^data: (.*)$/m.exec(b)[1]) }));
 }
 const pick = (events, name) => events.filter((e) => e.event === name).map((e) => e.data);
@@ -97,6 +97,16 @@ test('a Codex follow-up carries the conversation so far', async () => {
   const [other] = pick(await ask(s, 'Start over', 'not-a-session'), 'answer');
   assert.notEqual(other.session, first.session);
   assert.doesNotMatch(s.calls()[2].input, /Earlier in this conversation/);
+});
+
+test('the model and effort picked on the page reach the CLI, and nothing else does', async () => {
+  const s = await serve({ FLOORPLAN_CLAUDE: path.join(FAKE, 'fake-claude.mjs'), FLOORPLAN_CODEX: path.join(FAKE, 'fake-codex.mjs') });
+  await ask(s, 'How do refunds work?', undefined, undefined, { model: 'sonnet', effort: 'high' });
+  await ask(s, 'How do refunds work?', undefined, undefined, { model: '--dangerously-skip-permissions', effort: 'huge' });
+  const [picked, junk] = s.calls();
+  assert.equal(picked.args[picked.args.indexOf('--model') + 1], 'sonnet');
+  assert.equal(picked.args[picked.args.indexOf('--effort') + 1], 'high');
+  assert.ok(!junk.args.includes('--model') && !junk.args.includes('--effort') && !junk.args.includes('--dangerously-skip-permissions'));
 });
 
 test('a signed-out Codex says so, so the map can tell the person to sign in', async () => {

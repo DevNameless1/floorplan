@@ -418,6 +418,8 @@ body.no-panel #panel-resize { opacity: 0; pointer-events: none; }
 #ask.big { width: min(960px, calc(100% - 40px)); }
 #ask.big #ask-input { height: 60vh !important; max-height: 60vh; }
 #ask-form .engine { margin-left: auto; }
+#ask-form .pick { flex: none; height: 28px; padding: 0 8px; border: 0; border-radius: 999px; background: rgba(var(--ink), .06); color: var(--text-2); font: inherit; font-size: 12.5px; cursor: pointer; }
+#ask-form .pick:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 #ask-expand.on { color: var(--text); background: rgba(var(--ink), .08); }
 #ask-input::placeholder { color: var(--text-3); }
 #ask-input:disabled { cursor: not-allowed; }
@@ -615,6 +617,8 @@ html.wk svg.dim .node:not(.hl) foreignObject { opacity: .28; }
       <span id="ask-chips"></span>
       <textarea id="ask-input" rows="1" placeholder="Ask anything about this codebase…" spellcheck="false" aria-label="Your request"></textarea>
       <span class="engine" id="ask-engine"><i></i>checking…</span>
+      <select class="pick" id="ask-model" title="Model for the next request" aria-label="Model" hidden><option value="">Default model</option><option value="fable">Fable</option><option value="opus">Opus</option><option value="sonnet">Sonnet</option><option value="haiku">Haiku</option></select>
+      <select class="pick" id="ask-effort" title="How hard the agent thinks: higher is slower and costs more" aria-label="Effort" hidden><option value="">Default effort</option><option value="low">Low effort</option><option value="medium">Medium effort</option><option value="high">High effort</option><option value="xhigh">Extra high effort</option><option value="max">Max effort</option></select>
       <button id="ask-agent" type="button" title="What the agent may use" aria-label="Agent settings" hidden><svg class="i" viewBox="0 0 24 24"><path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2"/><circle cx="10" cy="17" r="2"/></svg></button>
       <button id="ask-expand" type="button" title="Bigger editor (⌘/Ctrl+Enter sends)" aria-label="Bigger editor" aria-pressed="false"><svg class="i" viewBox="0 0 24 24"><path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/></svg></button>
       <button id="ask-hist" type="button" title="History" aria-label="History" hidden><svg class="i" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></button>
@@ -2085,6 +2089,14 @@ function setEngine(engine, label, warning) {
   if (typeof renderChips === 'function' && askState.context) renderChips();
   setWarning(warning || null);
   addModeSwitch();
+  // the Claude Code CLI takes a model and effort per request; Codex and the Claude app don't here
+  for (const k of ['model', 'effort']) {
+    const el = $(`#ask-${k}`);
+    el.hidden = !(engine === 'cli' && window.FLOORPLAN_SERVER?.code);
+    try { el.value = localStorage.getItem(`floorplan:${k}`) || ''; } catch {}
+    if (![...el.options].some((o) => o.value === el.value)) el.value = '';
+    el.onchange = () => { try { localStorage.setItem(`floorplan:${k}`, el.value); } catch {} };
+  }
 }
 async function detectEngine() {
   const S = window.FLOORPLAN_SERVER;
@@ -2433,7 +2445,7 @@ async function askViaCli(question, progress, mode = 'ask', session, onRole) {
   const res = await fetch('/api/ask', {
     method: 'POST', signal: askState.ctl.signal,
     headers: { 'content-type': 'application/json', 'x-floorplan-token': window.FLOORPLAN_SERVER.token },
-    body: JSON.stringify({ question, mode, session: mode === 'ask' ? askState.session : session }),
+    body: JSON.stringify({ question, mode, session: mode === 'ask' ? askState.session : session, model: $('#ask-model').value, effort: $('#ask-effort').value }),
   });
   if (!res.ok || !res.body) throw { code: 'cli_error', message: `Server returned ${res.status}` };
   const reader = res.body.getReader(), dec = new TextDecoder();

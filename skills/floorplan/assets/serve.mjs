@@ -474,7 +474,10 @@ function mcpFileFor(chosen) {
 }
 const mcpText = (m) => m ? `\n\nYou also have these MCP servers: ${m.names.join(', ')}. Use context7 (if listed) for current documentation of any library, framework or tool the code uses, and atlassian (if listed) to look up Jira issues and Confluence pages the question or the code refers to (issue keys like URB-123). Only read with them: never create, edit or comment on anything.` : '';
 // Claude Code: `claude -p` with read-only tools, answering in the schema; follow-ups resume its session
-function claudeRun(body, mode) {
+// what the page may pick per request; anything else is dropped so it can't become a CLI flag
+const PICKS = { model: ['fable', 'opus', 'sonnet', 'haiku'], effort: ['low', 'medium', 'high', 'xhigh', 'max'] };
+const pickFrom = (body) => Object.fromEntries(Object.entries(PICKS).map(([k, ok]) => [k, ok.includes(body[k]) ? body[k] : '']));
+function claudeRun(body, mode, pick = {}) {
   const st = mode.noTools ? { tools: [], skills: [], mcp: [] } : agentSettings();
   const mcp = mode.noTools ? null : mcpFileFor(st.mcp);
   const tools = [...st.tools.filter((t) => t !== 'Query'), ...(st.tools.includes('Query') ? ['Bash'] : []), ...(st.skills.length ? ['Skill'] : []), ...(mode.write ? ['Edit', 'Write'] : [])];
@@ -501,7 +504,8 @@ function claudeRun(body, mode) {
     args.push('--disallowedTools', ...['floorplan/**', '.claude/**', '.git/**', '**/.git/**', '.mcp.json', '**/.claude/**'].map((g) => `Edit(./${g})`), '--setting-sources', 'user,local');
   }
   if (body.session) args.push('--resume', String(body.session));
-  if (model) args.push('--model', model);
+  if (pick.model || model) args.push('--model', pick.model || model);
+  if (pick.effort) args.push('--effort', pick.effort);
   return {
     args, input: String(body.question || '').slice(0, mode.maxInput || 4000),
     onEvent(ev, out) {
@@ -576,7 +580,7 @@ const CLOSED = Symbol('closed'); // the browser went away mid-request
 /** Runs the agent once for a request and resolves with its answer, streaming progress through `send`. */
 function runAgent(res, send, body, mode = MODES[body.mode] || MODES.ask) {
   return new Promise((resolve, reject) => {
-    const run = ENGINES[engine].run(body, mode);
+    const run = ENGINES[engine].run(body, mode, res.pick);
     const child = spawn(cli.cmd, run.args, { cwd: root, env: cliEnv(), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
     const id = crypto.randomBytes(6).toString('hex');
     running.set(id, child);
@@ -632,6 +636,7 @@ function ask(req, res, body) {
   res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-store', Connection: 'keep-alive' });
   const send = (event, data) => { if (!res.writableEnded) res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`); };
   if (!cli) { send('failure', { code: 'cli_missing', message: `${ENGINES[want].name} not found.` }); return res.end(); }
+  res.pick = pickFrom(body);
   if (body.mode === 'change') return changePlan(res, send, body);
   if (body.mode === 'apply') return applyCode(res, send, body);
   if (body.mode === 'council') return council(res, send, body);
