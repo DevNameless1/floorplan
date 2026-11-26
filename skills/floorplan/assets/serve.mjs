@@ -492,12 +492,13 @@ function claudeRun(body, mode) {
     '--permission-mode', 'dontAsk',
     '--tools', tools.join(','), ...(allowed.length ? ['--allowedTools', ...allowed] : [])];
   // an approved code change: Edit and Write only on the files the person approved (anything else is denied in
-  // -p mode), never settings, hooks or the map, and no project settings the agent could write itself
+  // -p mode), never settings, hooks or the map, and no project settings the agent could write itself; `local`
+  // keeps the person's CLAUDE.local.md notes (its settings file sits under .claude/, which Edit can't touch)
   if (mode.write) {
     // Edit rules cover every file-editing tool, Write included
     // exact absolute rules (`//` starts an absolute path in a permission rule)
     for (const f of body.paths || []) args.push(`Edit(/${f.split(path.sep).join('/')})`);
-    args.push('--disallowedTools', ...['floorplan/**', '.claude/**', '.git/**', '**/.git/**', '.mcp.json', '**/.claude/**'].map((g) => `Edit(./${g})`), '--setting-sources', 'user');
+    args.push('--disallowedTools', ...['floorplan/**', '.claude/**', '.git/**', '**/.git/**', '.mcp.json', '**/.claude/**'].map((g) => `Edit(./${g})`), '--setting-sources', 'user,local');
   }
   if (body.session) args.push('--resume', String(body.session));
   if (model) args.push('--model', model);
